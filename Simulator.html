@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+    <style>
+        body {
+            background: #121212;
+            color: white;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .controls {
+            background: #222;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            border: 1px solid #444;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            max-width: 450px;
+        }
+
+        button {
+            padding: 10px;
+            cursor: pointer;
+            background: #00ffee;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            color: #111;
+            text-transform: uppercase;
+        }
+
+        .stop-btn {
+            background: #ff4444 !important;
+            color: white !important;
+        }
+
+        .stand {
+            display: grid;
+            grid-template-columns: repeat(4, 40px);
+            grid-gap: 10px;
+            padding: 15px;
+            background: #000;
+            border-radius: 15px;
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+        }
+
+        .led { 
+            width: 35px; height: 35px; border-radius: 50%; background: #333; 
+            /* Set to 0s for pure Python control, or 0.05s for a tiny bit of smoothing */
+            transition: background 0.05s linear; 
+        }
+
+        /* Columns 0 and 2: Signal goes UP (Bottom-to-Top) */
+        #col-0, #col-2 { 
+            display: flex; 
+            flex-direction: column-reverse; 
+            gap: 8px; 
+        }
+
+        /* Columns 1 and 3: Signal goes DOWN (Top-to-Bottom) */
+        #col-1, #col-3 { 
+            display: flex; 
+            flex-direction: column; 
+            gap: 8px; 
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="controls">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <label style="font-size: 10px;">AUTO-TRAIL</label>
+            <input type="checkbox" id="trail-toggle" checked>
+        </div>
+        <div>
+            <label style="font-size: 10px; display:block;">COLOR</label>
+            <input type="color" id="color-picker" value="#00ffee">
+        </div>
+        <div>
+            <label style="font-size: 10px; display:block;">SPEED</label>
+            <input type="range" id="speed" min="0.01" max="0.2" step="0.01" value="0.05">
+        </div>
+        <div class="btn-group" id="button-area"></div>
+    </div>
+
+    <div class="stand">
+        <div id="col-0" class="strip-column"></div>
+        <div id="col-1" class="strip-column"></div>
+        <div id="col-2" class="strip-column"></div>
+        <div id="col-3" class="strip-column"></div>
+    </div>
+
+    <script type="py" config="./pyscript.json">
+        from pyscript import document
+        import asyncio
+        import LEDTower1 
+
+        active_task = None
+
+        # --- ADD THIS VARIABLE ---
+        use_background_fader = True
+
+        async def tail_fader():
+            while True:
+                # Check the actual checkbox on the screen
+                is_on = document.querySelector("#trail-toggle").checked
+                
+                if is_on:
+                    for i in range(100):
+                        el = document.querySelector(f"#led-{i}")
+                        if el and el.style.backgroundColor != "rgb(51, 51, 51)":
+                            el.style.backgroundColor = "#333"
+                            el.style.boxShadow = "none"
+                
+                # We can make this faster for smoother auto-fading
+                await asyncio.sleep(0.05) 
+
+        # Make sure this task is still being created at the bottom
+        asyncio.create_task(tail_fader())
+
+        # 1. Initialize LEDs
+        for s_idx in range(4):
+            col = document.querySelector(f"#col-{s_idx}")
+            for i in range(s_idx*25, (s_idx*25)+25):
+                led = document.createElement("div")
+                led.className = "led"
+                led.id = f"led-{i}"
+                col.appendChild(led)
+
+        
+        asyncio.create_task(tail_fader())
+
+        # 3. LED Bridge
+        async def web_set_led(led_id, color):
+            el = document.querySelector(f"#led-{led_id}")
+            if el:
+                # Instant ON
+                el.style.transition = "none" 
+                el.style.backgroundColor = color
+                el.style.boxShadow = f"0 0 15px {color}"
+                # Trigger a reflow so the browser sees the 'instant' change
+                _ = el.offsetHeight 
+                # Re-enable the CSS transition for the fade out
+                el.style.transition = "background 0.6s ease-out, box-shadow 0.6s ease-out"
+
+        # 4. Effect Handler
+        async def start_effect(func_name):
+            global active_task, use_background_fader
+        
+            # 1. Decide if we need the auto-fader
+            # Turn it OFF for your custom scanner, ON for others
+            if func_name == "scanner_glow_ahead":
+                use_background_fader = False
+            else:
+                use_background_fader = True
+
+            if active_task and not active_task.done():
+                active_task.cancel()
+                try: await active_task
+                except: pass
+            
+            if func_name != "stop":
+                color = document.querySelector("#color-picker").value
+                speed = float(document.querySelector("#speed").value)
+                effect_func = getattr(LEDTower1, func_name)
+                active_task = asyncio.create_task(effect_func(web_set_led, color, speed))
+
+        # 5. Build Buttons
+        area = document.querySelector("#button-area")
+        for name in LEDTower1.__all__:
+            btn = document.createElement("button")
+            btn.innerText = name.replace("_", " ")
+            if name == "stop": btn.className = "stop-btn"
+            
+            def make_handler(n):
+                async def h(e): await start_effect(n)
+                return h
+            
+            btn.onclick = make_handler(name)
+            area.appendChild(btn)
+    </script>
+</body>
+
+</html>
