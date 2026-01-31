@@ -2,7 +2,7 @@ import asyncio
 import random
 
 # Added 'rainbow_cycle' for fun!
-__all__ = ['scanner_glow_ahead', 'scanner_glow_ahead', 'scanner_fade_in', 'scanner', 'comet_chase', 'bounce_effect', 'pulse_sync', 'rainbow_cycle', 'stop', 'sparkle', 'rising_ring']
+__all__ = ['fire_tower', 'breathing_pulse', 'fire_flicker', 'scanner_glow_ahead', 'scanner_glow_ahead', 'scanner_fade_in', 'scanner', 'comet_chase', 'bounce_effect', 'pulse_sync', 'rainbow_cycle', 'stop', 'sparkle', 'rising_ring']
 
 def get_path():
     s1 = list(range(0, 25))
@@ -281,5 +281,89 @@ async def scanner_glow_ahead(set_led, color, speed):
             elif pos <= -4:
                 direction = 1
                 
+    except asyncio.CancelledError:
+        pass
+
+
+async def fire_flicker(set_led, color, speed):
+    # We ignore the 'color' parameter and use fire colors: Red, Orange, Yellow
+    fire_colors = ["#ff0000", "#ff4400", "#ff6600", "#ffaa00"]
+    
+    try:
+        while True:
+            # Pick a random pillar and a random height near the bottom (0-8)
+            pillar_base = random.choice([0, 25, 50, 75])
+            height = random.randint(0, 8)
+            
+            # Serpentine adjustment for the random height
+            # (Simplified for the flicker effect)
+            led_id = pillar_base + height 
+            
+            # Pick a random fire color and 'pop' it
+            await set_led(led_id, random.choice(fire_colors))
+            
+            # The speed slider controls how "intense" the fire is
+            await asyncio.sleep(speed)
+    except asyncio.CancelledError:
+        pass
+
+
+async def breathing_pulse(set_led, color, speed):
+    try:
+        while True:
+            # Fade In
+            for i in range(101):
+                brightness = i / 100.0
+                current_color = dim_color(color, brightness)
+                for led_id in range(100):
+                    await set_led(led_id, current_color)
+                await asyncio.sleep(speed / 10)
+            
+            # Fade Out
+            for i in range(100, -1, -1):
+                brightness = i / 100.0
+                current_color = dim_color(color, brightness)
+                for led_id in range(100):
+                    await set_led(led_id, current_color)
+                await asyncio.sleep(speed / 10)
+    except asyncio.CancelledError:
+        pass
+
+async def fire_tower(set_led, color, speed):
+    """
+    Simulates a fire at the base of the tower.
+    Heat is strongest at the bottom and flickers towards the middle (floor 12).
+    """
+    try:
+        # Fire colors from hottest (base) to coolest (middle)
+        colors = ["#333", "#ff0000", "#ff4400", "#ffaa00", "#ffffff"]
+        
+        while True:
+            # We only care about the bottom half of the tower (floors 0 to 14)
+            for floor in range(15):
+                # 1. Calculate base probability of a flame reaching this height
+                # Higher floors have a lower chance of being lit
+                chance = random.random()
+                threshold = 0.8 - (floor * 0.05) # Diminishing returns as we go up
+                
+                if chance < threshold:
+                    # 2. Pick a color based on height + a bit of randomness
+                    # Bottom floors get whites/yellows, middle gets reds
+                    color_idx = max(1, 4 - (floor // 3) - random.randint(0, 1))
+                    flicker_color = colors[min(color_idx, 4)]
+                    
+                    # 3. Apply to all 4 pillars at once to keep the 'ring' feel
+                    await set_floor(set_led, floor, flicker_color)
+                else:
+                    # 4. If the flame doesn't reach here, keep it dark
+                    await set_floor(set_led, floor, "#333")
+            
+            # Ensure the top half of the tower stays dark
+            for floor in range(15, 25):
+                await set_floor(set_led, floor, "#333")
+
+            # Speed slider controls the flicker rate
+            await asyncio.sleep(speed * 2)
+            
     except asyncio.CancelledError:
         pass

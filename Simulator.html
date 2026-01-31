@@ -5,32 +5,42 @@
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
     <style>
+        /* 1. LAYOUT FIX: Use Flex on Body */
         body {
             background: #121212;
             color: white;
             font-family: sans-serif;
             display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 20px;
+            /* Enable Flexbox */
+            flex-direction: row-reverse;
+            /* Controls on right, Stand on left */
+            justify-content: center;
+            /* Center the group */
+            align-items: flex-start;
+            /* Align to top */
+            gap: 20px;
+            height: 100vh;
+            margin: 0;
         }
 
         .controls {
             background: #222;
             padding: 20px;
             border-radius: 10px;
-            margin-bottom: 20px;
             display: flex;
-            gap: 20px;
-            align-items: center;
+            flex-direction: column;
+            /* Stack buttons vertically */
+            gap: 15px;
             border: 1px solid #444;
+            width: 250px;
+            z-index: 1000;
+            /* Keep controls above diffusers */
         }
 
         .btn-group {
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
-            max-width: 450px;
         }
 
         button {
@@ -51,51 +61,105 @@
 
         .stand {
             display: grid;
-            grid-template-columns: repeat(4, 40px);
-            grid-gap: 10px;
-            padding: 15px;
+            grid-template-columns: repeat(4, 1cm);
+            grid-gap: 5px; 
+            padding-left: 10px;
             background: #000;
-            border-radius: 15px;
+            border-radius: 5px;
             box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+            position: relative;
+            height: 25cm; 
+            width: fit-content;
         }
 
         .led { 
-            width: 35px; height: 35px; border-radius: 50%; background: #333; 
-            /* Set to 0s for pure Python control, or 0.05s for a tiny bit of smoothing */
+            width: 0.7cm;  /* The physical LED chip size */
+            height: 0.7cm; 
+            border-radius: 50%; 
+            background: #333; 
             transition: background 0.05s linear; 
+            flex-shrink: 0;
         }
 
-        /* Columns 0 and 2: Signal goes UP (Bottom-to-Top) */
-        #col-0, #col-2 { 
-            display: flex; 
-            flex-direction: column-reverse; 
-            gap: 8px; 
+        #col-0, #col-1, #col-2, #col-3 {
+            display: flex;
+            height: 100%;
+            /* This distributes your 25 LEDs perfectly over the 25cm height */
+            justify-content: space-around; 
+            align-items: center;
         }
 
-        /* Columns 1 and 3: Signal goes DOWN (Top-to-Bottom) */
-        #col-1, #col-3 { 
-            display: flex; 
-            flex-direction: column; 
-            gap: 8px; 
+        #col-0, #col-2 { flex-direction: column-reverse; }
+        #col-1, #col-3 { flex-direction: column; }
+
+        /* 2. DIFFUSER FIX: Close button and Resize */
+        .frosted-glass {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.03); /* Keep it very transparent */
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            
+            /* Increase the blur for more spread */
+            backdrop-filter: blur(25px) saturate(180%);
+            -webkit-backdrop-filter: blur(25px) saturate(180%);
+            
+            /* This creates the 'spread' effect outside the diffuser */
+            box-shadow: 0 0 40px rgba(255, 255, 255, 0.1), 
+                        inset 0 0 20px rgba(255, 255, 255, 0.05);
+            
+            z-index: 10;
+            resize: both; 
+            overflow: hidden; 
+            display: flex;
+            flex-direction: column;
+        }
+
+        .drag-handle {
+            width: 100%;
+            height: 25px;
+            background: rgba(255, 255, 255, 0.2);
+            cursor: move;
+            font-size: 10px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        .close-diffuser {
+            position: absolute;
+            top: 2px;
+            right: 7px;
+            color: #ff4444;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 16px;
+            z-index: 20;
+            /* Ensure it's clickable above the handle */
         }
     </style>
 </head>
 
 <body>
-
     <div class="controls">
+        <button onclick="createDiffuser()" style="background: #ffa500;">+ Add Diffuser</button>
+
         <div style="display: flex; align-items: center; gap: 10px;">
             <label style="font-size: 10px;">AUTO-TRAIL</label>
             <input type="checkbox" id="trail-toggle" checked>
         </div>
+
         <div>
             <label style="font-size: 10px; display:block;">COLOR</label>
             <input type="color" id="color-picker" value="#00ffee">
         </div>
+
         <div>
             <label style="font-size: 10px; display:block;">SPEED</label>
             <input type="range" id="speed" min="0.01" max="0.2" step="0.01" value="0.05">
         </div>
+
         <div class="btn-group" id="button-area"></div>
     </div>
 
@@ -112,29 +176,21 @@
         import LEDTower1 
 
         active_task = None
-
-        # --- ADD THIS VARIABLE ---
         use_background_fader = True
 
         async def tail_fader():
             while True:
-                # Check the actual checkbox on the screen
                 is_on = document.querySelector("#trail-toggle").checked
-                
-                if is_on:
+                if is_on and use_background_fader:
                     for i in range(100):
                         el = document.querySelector(f"#led-{i}")
                         if el and el.style.backgroundColor != "rgb(51, 51, 51)":
                             el.style.backgroundColor = "#333"
                             el.style.boxShadow = "none"
-                
-                # We can make this faster for smoother auto-fading
                 await asyncio.sleep(0.05) 
 
-        # Make sure this task is still being created at the bottom
         asyncio.create_task(tail_fader())
 
-        # 1. Initialize LEDs
         for s_idx in range(4):
             col = document.querySelector(f"#col-{s_idx}")
             for i in range(s_idx*25, (s_idx*25)+25):
@@ -143,32 +199,18 @@
                 led.id = f"led-{i}"
                 col.appendChild(led)
 
-        
-        asyncio.create_task(tail_fader())
-
-        # 3. LED Bridge
         async def web_set_led(led_id, color):
             el = document.querySelector(f"#led-{led_id}")
             if el:
-                # Instant ON
                 el.style.transition = "none" 
                 el.style.backgroundColor = color
                 el.style.boxShadow = f"0 0 15px {color}"
-                # Trigger a reflow so the browser sees the 'instant' change
                 _ = el.offsetHeight 
-                # Re-enable the CSS transition for the fade out
-                el.style.transition = "background 0.6s ease-out, box-shadow 0.6s ease-out"
+                el.style.transition = "background 0.5s linear"
 
-        # 4. Effect Handler
         async def start_effect(func_name):
             global active_task, use_background_fader
-        
-            # 1. Decide if we need the auto-fader
-            # Turn it OFF for your custom scanner, ON for others
-            if func_name == "scanner_glow_ahead":
-                use_background_fader = False
-            else:
-                use_background_fader = True
+            use_background_fader = False if "glow" in func_name or "scanner" in func_name else True
 
             if active_task and not active_task.done():
                 active_task.cancel()
@@ -181,7 +223,6 @@
                 effect_func = getattr(LEDTower1, func_name)
                 active_task = asyncio.create_task(effect_func(web_set_led, color, speed))
 
-        # 5. Build Buttons
         area = document.querySelector("#button-area")
         for name in LEDTower1.__all__:
             btn = document.createElement("button")
@@ -194,6 +235,53 @@
             
             btn.onclick = make_handler(name)
             area.appendChild(btn)
+    </script>
+
+    <script>
+        function createDiffuser() {
+            const d = document.createElement("div");
+            d.className = "frosted-glass";
+            d.style.left = "50px";
+            d.style.top = "50px";
+            d.style.width = "60px";
+            d.style.height = "600px";
+
+            // The close button is separate from the drag handle to ensure it works
+            d.innerHTML = `
+                <div class="drag-handle">DRAG</div>
+                <div class="close-diffuser" onclick="this.parentElement.remove()">×</div>
+            `;
+
+            document.body.appendChild(d);
+            makeDraggable(d);
+        }
+
+        function makeDraggable(el) {
+            const handle = el.querySelector(".drag-handle");
+            let isDragging = false;
+
+            handle.onmousedown = (e) => {
+                // Only drag if the handle is clicked, not the close button
+                if (e.target.className === 'close-diffuser') return;
+
+                isDragging = true;
+                let startX = e.clientX - el.offsetLeft;
+                let startY = e.clientY - el.offsetTop;
+
+                document.onmousemove = (e) => {
+                    if (!isDragging) return;
+                    el.style.left = (e.clientX - startX) + "px";
+                    el.style.top = (e.clientY - startY) + "px";
+                };
+
+                document.onmouseup = () => {
+                    isDragging = false;
+                    document.onmousemove = null;
+                };
+            };
+        }
+
+        window.onload = createDiffuser;
     </script>
 </body>
 
