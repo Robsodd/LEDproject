@@ -2,7 +2,7 @@ import asyncio
 import random
 
 # Added 'rainbow_cycle' for fun!
-__all__ = ['fire_tower', 'breathing_pulse', 'fire_flicker', 'scanner_glow_ahead', 'scanner_glow_ahead', 'scanner_fade_in', 'scanner', 'comet_chase', 'bounce_effect', 'pulse_sync', 'rainbow_cycle', 'stop', 'sparkle', 'rising_ring']
+__all__ = ['plain_white', 'fire_tower', 'breathing_pulse', 'fire_flicker', 'scanner_glow_ahead', 'scanner_glow_ahead', 'scanner_fade_in', 'scanner', 'comet_chase', 'bounce_effect', 'pulse_sync', 'rainbow_cycle', 'stop', 'sparkle', 'rising_ring']
 
 def get_path():
     s1 = list(range(0, 25))
@@ -14,6 +14,33 @@ def get_path():
 async def stop(set_led, color, speed):
     # The fader in the HTML will handle the cleanup
     return 
+
+async def plain_white(set_led, color, speed):
+    """
+    Fades in the entire tower to a steady white light at 50% brightness.
+    """
+    try:
+        # Step 1: Fade In
+        # We move from 0% to 50% in 50 steps
+        for i in range(51):
+            brightness = i / 100.0  # Current brightness (0.00 to 0.50)
+            current_white = dim_color("#ffffff", brightness)
+            
+            # Update all 100 LEDs
+            for led_id in range(100):
+                # We don't 'await' every single LED to keep it fast
+                asyncio.create_task(set_led(led_id, current_white))
+            
+            # The speed of the fade (0.04 * 50 steps = 2 second fade)
+            await asyncio.sleep(0.04)
+
+        # Step 2: Hold
+        while True:
+            await asyncio.sleep(1)
+            
+    except asyncio.CancelledError:
+        # Optional: You could add a Fade Out here if you wanted!
+        pass
 
 async def comet_chase(set_led, color, speed):
     path = get_path()
@@ -365,5 +392,50 @@ async def fire_tower(set_led, color, speed):
             # Speed slider controls the flicker rate
             await asyncio.sleep(speed * 2)
             
+    except asyncio.CancelledError:
+        pass
+
+
+
+async def startup_sequence(set_led, color, speed):
+    """
+    Sparkles for 3 seconds, then fades into 50% white.
+    """
+    try:
+        # 1. SPARKLE PHASE (3 seconds)
+        # We run roughly 60 frames of sparkles
+        for _ in range(60):
+            # Pick 3 random LEDs to "pop" white
+            for _ in range(3):
+                random_led = random.randint(0, 99)
+                # Flash a random LED bright white
+                asyncio.create_task(set_led(random_led, "#ffffff"))
+            
+            # Brief pause for the sparkle effect
+            await asyncio.sleep(0.05)
+            
+            # The 'tail_fader' or your cleanup logic will handle 
+            # turning these off, or we can do a quick dim:
+            for _ in range(3):
+                random_led = random.randint(0, 99)
+                asyncio.create_task(set_led(random_led, "#333"))
+
+        # 2. TRANSITION: Quick clear before the white fade
+        for i in range(100):
+            asyncio.create_task(set_led(i, "#333"))
+        await asyncio.sleep(0.5)
+
+        # 3. PLAIN WHITE FADE-IN (To 50%)
+        for i in range(51):
+            brightness = i / 100.0
+            current_white = dim_color("#ffffff", brightness)
+            for led_id in range(100):
+                asyncio.create_task(set_led(led_id, current_white))
+            await asyncio.sleep(0.04)
+
+        # Hold the white light
+        while True:
+            await asyncio.sleep(1)
+
     except asyncio.CancelledError:
         pass
