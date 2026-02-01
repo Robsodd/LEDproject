@@ -13,13 +13,23 @@ pixels = neopixel.NeoPixel(PIXEL_PIN, NUM_PIXELS, brightness=current_brightness,
 # 2. The Bridge Function
 # This takes the hex colors from your logic and gives them to the real LEDs
 async def pi_set_led(led_id, color_hex):
-    # Convert hex (#00ffee) to RGB tuple (0, 255, 238)
-    r = int(color_hex[1:3], 16)
-    g = int(color_hex[3:5], 16)
-    b = int(color_hex[5:7], 16)
-    
-    pixels[led_id] = (r, g, b)
-    pixels.show()
+    # SAFETY: If color_hex is empty, None, or too short, just turn the LED off
+    if not color_hex or len(color_hex) < 7:
+        pixels[led_id] = (0, 0, 0)
+        pixels.show()
+        return
+
+    try:
+        # Convert hex (#00ffee) to RGB tuple (0, 255, 238)
+        r = int(color_hex[1:3], 16)
+        g = int(color_hex[3:5], 16)
+        b = int(color_hex[5:7], 16)
+        
+        pixels[led_id] = (r, g, b)
+        pixels.show()
+    except ValueError:
+        # If the hex code is garbled, just skip this frame
+        pass
 
 async def main():
     global current_brightness
@@ -98,3 +108,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
+
+    
