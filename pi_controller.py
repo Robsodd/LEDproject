@@ -9,6 +9,23 @@ PIXEL_PIN = board.D18  # Typical GPIO pin for LEDs
 NUM_PIXELS = 100
 current_brightness = 0.3
 pixels = neopixel.NeoPixel(PIXEL_PIN, NUM_PIXELS, brightness=current_brightness, auto_write=False)
+fader_active = False
+current_fader_decay = 0.75
+
+# --- THE AUTO-FADER ---
+async def auto_fader_loop():
+    global fader_active, current_fader_decay
+    while True:
+        if fader_active:
+            for i in range(NUM_PIXELS):
+                r, g, b = pixels[i]
+                # Now it uses the specific speed tagged in LEDTower1
+                pixels[i] = (int(r * current_fader_decay), 
+                             int(g * current_fader_decay), 
+                             int(b * current_fader_decay))
+            pixels.show()
+        # 0.04s is roughly 25 frames per second—nice and smooth
+        await asyncio.sleep(0.04)
 
 # 2. The Bridge Function
 # This takes the hex colors from your logic and gives them to the real LEDs
@@ -32,13 +49,14 @@ async def pi_set_led(led_id, color_hex):
         pass
 
 async def main():
+    global fader_active
     global current_brightness
     active_task = None
     
     # Run the startup sequence
     print("--- POWERING UP ---")
-    await LEDTower1.startup_sequence(pi_set_led, "#ffffff", 0.05)
-
+    active_task = asyncio.create_task(LEDTower1.startup_sequence(pi_set_led, "#ffffff", 0.05))
+    asyncio.create_task(auto_fader_loop())
     while True:
         # 1. List the available options
         print("\n" + "="*30)
@@ -57,7 +75,7 @@ async def main():
         # We use run_in_executor so the terminal doesn't 'freeze' the LEDs
         loop = asyncio.get_event_loop()
         choice = await loop.run_in_executor(None, lambda: input("Select an option: ").strip().lower())
-
+        
         # 3. Handle Quit
         if choice == 'q' or choice == 'quit':
             print("Shutting down LEDs...")
@@ -81,6 +99,8 @@ async def main():
         elif choice.isdigit() or choice in options:
             # 4. Run the Effect
             # Check if choice is a number or the name
+
+
             selected_effect = None
             if choice.isdigit():
                 idx = int(choice)
@@ -93,13 +113,21 @@ async def main():
                 # Stop the previous animation
                 if active_task and not active_task.done():
                     active_task.cancel()
+                    for i in range(100): pixels[i] = (0,0,0)
+                    pixels.show()
                     try: await active_task
                     except asyncio.CancelledError: pass
                 
                 print(f"--- Running: {selected_effect} ---")
                 # Default color and speed for the terminal mode
                 effect_func = getattr(LEDTower1, selected_effect)
+                fader_active = getattr(effect_func, 'use_fader', False)
+                current_fader_decay = getattr(effect_func, 'fader_speed', 0.75)
+                anim_speed = getattr(effect_func, 'animation_speed', 0.05)
+
                 active_task = asyncio.create_task(effect_func(pi_set_led, "#00ffee", 0.05))
+                print(f"--- Launching {choice} ---")
+                print(f"Anim Speed: {anim_speed}s | Fader: {fader_active} (Decay: {current_fader_decay})")
             else:
                 print("Invalid selection. Try again.")
 
