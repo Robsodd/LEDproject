@@ -49,10 +49,15 @@ async def plain_white(set_led, color, speed):
             current_white = dim_color("#ffffff", brightness)
             
             # Update all 100 LEDs
-            for led_id in range(100):
+            for led_id in range(25):
                 # We don't 'await' every single LED to keep it fast
                 asyncio.create_task(set_led(led_id, current_white))
-            
+                strip2 = 50-led_id
+                asyncio.create_task(set_led(strip2, current_white))
+                strip3 = 49+led_id
+                asyncio.create_task(set_led(strip3, current_white))
+                strip4 = 100-led_id
+                asyncio.create_task(set_led(strip4, current_white))
             # The speed of the fade (0.04 * 50 steps = 2 second fade)
             await asyncio.sleep(0.04)
 
