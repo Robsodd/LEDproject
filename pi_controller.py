@@ -48,6 +48,28 @@ async def pi_set_led(led_id, color_hex):
         # If the hex code is garbled, just skip this frame
         pass
 
+
+async def pi_set_led_multiple(led_ids, color_hex, brightness = 1.0):
+    # 1. Handle "Off" or "Garbled" cases once, before the loop
+    if not color_hex or len(color_hex) < 7:
+        r, g, b = (0, 0, 0)
+    else:
+        try:
+            r = int(int(color_hex[1:3], 16)*brightness)
+            g = int(int(color_hex[3:5], 16)*brightness)
+            b = int(int(color_hex[5:7], 16)*brightness)
+        except ValueError:
+            return # Skip this frame if hex is bad
+
+    # 2. Update the internal buffer (No .show() here!)
+    for lid in led_ids:
+        # Extra safety check to prevent IndexErrors for good
+        if 0 <= lid < NUM_PIXELS:
+            pixels[lid] = (r, g, b)
+
+    # 3. Push the entire batch to the tower in ONE move
+    pixels.show()
+
 async def main():
     global fader_active
     global current_brightness
@@ -125,7 +147,7 @@ async def main():
                 current_fader_decay = getattr(effect_func, 'fader_speed', 0.75)
                 anim_speed = getattr(effect_func, 'animation_speed', 0.05)
 
-                active_task = asyncio.create_task(effect_func(pi_set_led, "#00ffee", 0.05))
+                active_task = asyncio.create_task(effect_func(pi_set_led, pi_set_led_multiple, "#00ffee", 0.05))
                 print(f"--- Launching {choice} ---")
                 print(f"Anim Speed: {anim_speed}s | Fader: {fader_active} (Decay: {current_fader_decay})")
             else:

@@ -197,6 +197,7 @@
                 led = document.createElement("div")
                 led.className = "led"
                 led.id = f"led-{i}"
+                led.innerText = i
                 col.appendChild(led)
 
         async def web_set_led(led_id, color):
@@ -207,6 +208,26 @@
                 el.style.boxShadow = f"0 0 15px {color}"
                 _ = el.offsetHeight 
                 el.style.transition = "background 0.5s linear"
+
+        async def web_set_led_multiple(led_ids, color, brightness=1.0):
+            # Convert brightness (0.0 - 1.0) to a percentage for CSS
+            bright_pct = brightness * 100
+            
+            # Create a 'dimmed' version of the color by mixing it with black
+            # 100% brightness = pure color | 20% brightness = 20% color, 80% black
+            display_color = f"color-mix(in srgb, {color} {bright_pct}%, black)"
+            
+            for lid in led_ids:
+                el = document.querySelector(f"#led-{lid}")
+                if el:
+                    el.style.transition = "none" 
+                    el.style.backgroundColor = display_color
+                    
+                    # We also dim the glow (box-shadow) to match
+                    el.style.boxShadow = f"0 0 15px {display_color}"
+                    
+                    _ = el.offsetHeight 
+                    el.style.transition = "background 0.5s linear, box-shadow 0.5s linear"
 
         async def start_effect(func_name):
             global active_task, use_background_fader
@@ -221,7 +242,7 @@
                 color = document.querySelector("#color-picker").value
                 speed = float(document.querySelector("#speed").value)
                 effect_func = getattr(LEDTower1, func_name)
-                active_task = asyncio.create_task(effect_func(web_set_led, color, speed))
+                active_task = asyncio.create_task(effect_func(web_set_led, web_set_led_multiple, color, speed))
 
         area = document.querySelector("#button-area")
         for name in LEDTower1.__all__:

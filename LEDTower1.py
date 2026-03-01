@@ -1,6 +1,34 @@
 import asyncio
 import random
 import colorsys
+import math
+
+S1 = list(range(0, 25))
+S2 = list(range(49, 24, -1))
+S3 = list(range(50, 75))
+S4 = list(range(99, 74, -1))
+
+# The full 'snake' FULL_PATH (100 LEDs)
+FULL_PATH = S1 + S2 + S3 + S4
+
+# The 'Level' FULL_PATH (A list of 25 steps, each containing 4 LED IDs at the same height)
+# Zip combines the sides so that HEIGHTS[0] = [0, 49, 50, 99] (all bottom LEDs)
+HEIGHTS = [list(step) for step in zip(S1, S2, S3, S4)]
+
+print(f"S1 Length: {len(S1)} | Max ID: {max(S1) if S1 else 'Empty'}")
+print(f"S4 Length: {len(S2)} | Max ID: {max(S2) if S2 else 'Empty'}")
+print(f"S3 Length: {len(S3)} | Max ID: {max(S3) if S3 else 'Empty'}")
+print(f"S4 Length: {len(S4)} | Max ID: {max(S4) if S4 else 'Empty'}")
+print(f"HEIGHTS Steps: {len(HEIGHTS)}")
+
+# This is the "Golden Rule" check:
+all_ids = S1 + S2 + S3 + S4
+if any(idx >= 100 for idx in all_ids):
+    print("!!! WARNING: Found an ID >= 100. This will cause IndexError !!!")
+    print(f"Offending IDs: {[idx for idx in all_ids if idx >= 100]}")
+else:
+    print("Check Passed: All IDs are within 0-99.")
+print("----------------------------------")
 
 # Added 'rainbow_cycle' for fun!
 __all__ = [
@@ -20,6 +48,9 @@ __all__ = [
             'rainbow_comet',
             'rainbow_cycle',
             'rainbow_bounce',
+            'rainbow_fall',
+            'rainbow_stationary',
+            'rainbow_stationary_top_bottom',
             'spinning_columns',
             'spinning_columns_fade',
             'stop',
@@ -33,47 +64,47 @@ def get_path():
     s4 = list(range(99, 74, -1))
     return s1 + s2 + s3 + s4
 
-async def stop(set_led, color, speed):
+async def stop(set_led, set_led_multiple, color, speed):
     # The fader in the HTML will handle the cleanup
     return 
 
-async def plain_white(set_led, color, speed):
+async def plain_white(set_led, set_led_multiple, color, speed):
     """
     Fades in the entire tower to a steady white light at 50% brightness.
     """
     try:
-        # Step 1: Fade In
-        # We move from 0% to 50% in 50 steps
-        for i in range(51):
-            brightness = i / 100.0  # Current brightness (0.00 to 0.50)
+        # Step 1: Fade In (0 to 10 steps)
+        for i in range(11): 
+            brightness = (i * 5) / 100.0  # Moves from 0.0 to 0.5
             current_white = dim_color("#ffffff", brightness)
-            
-            # Update all 100 LEDs
+            all_ids = []
             for led_id in range(25):
-                # We don't 'await' every single LED to keep it fast
-                asyncio.create_task(set_led(led_id, current_white))
-                strip2 = 50-led_id
-                asyncio.create_task(set_led(strip2, current_white))
-                strip3 = 49+led_id
-                asyncio.create_task(set_led(strip3, current_white))
-                strip4 = 100-led_id
-                asyncio.create_task(set_led(strip4, current_white))
-            # The speed of the fade (0.04 * 50 steps = 2 second fade)
-            await asyncio.sleep(0.04)
+                # Corrected mapping for 100 LEDs (Sides 2 and 4 upside down)
+                side1 = led_id
+                side2 = 49 - led_id
+                side3 = 50 + led_id
+                side4 = 99 - led_id
+                
+                all_ids.extend([side1, side2, side3, side4])
+                
+            await set_led_multiple(all_ids, current_white)
+            # Controls how fast the 'fade' happens
+            await asyncio.sleep(plain_white.anim_speed)
 
-        # Step 2: Hold
+        # Step 2: Hold steady
         while True:
             await asyncio.sleep(1)
             
     except asyncio.CancelledError:
-        # Optional: You could add a Fade Out here if you wanted!
         pass
-plain_white.animation_speed = 0.10
 
-async def comet_chase(set_led, color, speed):
-    path = get_path()
+plain_white.use_fader = False
+plain_white.anim_speed = 0.10
+
+async def comet_chase(set_led, set_led_multiple, color, speed):
+    
     try:
-        for led_id in path:
+        for led_id in FULL_PATH:
             await set_led(led_id, color)
             await asyncio.sleep(speed)
     except asyncio.CancelledError: pass
@@ -82,66 +113,62 @@ comet_chase.use_fader = True
 comet_chase.fader_speed = 0.85
 comet_chase.animation_speed = 0.50
 
-async def bounce_effect(set_led, color, speed):
-    path = get_path()
+async def bounce_effect_single(set_led, set_led_multiple, color, speed):
+    
     try:
-        full_path = path + list(reversed(path))
-        for led_id in full_path:
+        path = FULL_PATH + list(reversed(FULL_PATH))
+        for led_id in path:
             await set_led(led_id, color)
             await asyncio.sleep(speed)
     except asyncio.CancelledError: pass
 
-bounce_effect.use_fader = True
-bounce_effect.fader_speed = 0.85
-bounce_effect.animation_speed = 0.50
+bounce_effect_single.use_fader = True
+bounce_effect_single.fader_speed = 0.85
+bounce_effect_single.animation_speed = 0.50
 
-async def bounce_effect_single(set_led, color, speed):
-    side_length = 25 
-    
-    # Helper to flip the index for upside-down sides (Sides 2 and 4)
-    def get_physical_id(height, side):
-        # side 0 & 2 are "Normal" (0-24, 50-74)
-        # side 1 & 3 are "Upside Down" (25-49, 75-99)
-        # (Using 0-indexed sides here: 0, 1, 2, 3)
-        base = side * side_length
-        if side % 2 == 1: # Sides 1 and 3 in code (your 2 and 4)
-            return base + (side_length - 1 - height)
-        return base + height
-
+async def bounce_effect(set_led, set_led_multiple, color, speed):
+    """
+    Simultaneously bounces a light pulse up and down all four sides.
+    Uses the pre-calculated HEIGHTS global for efficiency.
+    """
+    # Create the up-and-down loop: Floor -> Ceiling -> Floor
+    # HEIGHTS provides the 4-pixel lists: [s1, s2, s3, s4]
+    bounce_path = HEIGHTS + HEIGHTS[-2:0:-1]
+    print(f"bounce_path Length: {len(bounce_path)}")
+    print("--- Detailed Bounce Path ---")
+    for i, step in enumerate(bounce_path):
+        print(f"Step {i:02}: {step}")
     try:
-        # 0 to 24, then 24 down to 0
-        heights = list(range(side_length)) + list(range(side_length - 1, -1, -1))
-        
-        for h in heights:
-            # Update all 4 sides using the physical mapping
-            await set_led(get_physical_id(h, 0), color)
-            await set_led(get_physical_id(h, 1), color)
-            await set_led(get_physical_id(h, 2), color)
-            await set_led(get_physical_id(h, 3), color)
-            
-            await asyncio.sleep(speed)
-            
+        while True:
+            for step_ids in bounce_path:
+                # Use set_led_multiple to update all 4 sides at the exact same time
+                await set_led_multiple(step_ids, color)
+                
+                # The 'anim_speed' tag controls the bounce velocity
+                await asyncio.sleep(speed)
+                
     except asyncio.CancelledError:
         pass
 
-bounce_effect_single.use_fader = True
-bounce_effect_single.fader_speed = 0.85
-bounce_effect_single.anim_speed = 0.05
+# TAGS
+bounce_effect.use_fader = True
+bounce_effect.fader_speed = 0.85
+bounce_effect.anim_speed = 0.01
 
-async def pulse_sync(set_led, color, speed):
+async def pulse_sync(set_led, set_led_multiple, color, speed):
     try:
         while True:
             for i in range(100): await set_led(i, color)
             await asyncio.sleep(speed * 10)
     except asyncio.CancelledError: pass
 
-async def rainbow_comet(set_led, color, speed):
-    path = get_path() # This gets your 100-LED path
+async def rainbow_comet(set_led, set_led_multiple, color, speed):
+     # This gets your 100-LED FULL_PATH
     hue = 0
     
     try:
         while True:
-            for led_id in path:
+            for led_id in FULL_PATH:
                 # 1. Calculate current rainbow color
                 current_hex = hsl_to_hex(hue, 100, 50)
                 
@@ -162,39 +189,27 @@ rainbow_comet.use_fader = True     # This creates the "tail"
 rainbow_comet.fader_speed = 0.85   # Higher = longer rainbow tail
 rainbow_comet.anim_speed = 0.02    # Lower = faster moving comet
 
-async def rainbow_bounce(set_led, color, speed):
-    side_length = 25 
+async def rainbow_bounce(set_led, set_led_multiple, color, speed):
+    """
+    Simultaneously bounces a rainbow-shifting pulse up and down all four sides.
+    Uses pre-calculated HEIGHTS and batch updates.
+    """
     hue = 0
-    
-    # Helper to handle the upside-down wiring of sides 2 and 4
-    def get_physical_id(height, side):
-        # Side indices 0, 1, 2, 3
-        base = side * side_length
-        if side % 2 == 1:  # Sides 1 and 3 in code (physical 2 and 4)
-            return base + (side_length - 1 - height)
-        return base + height
-
+    # Bounce path: Floor to Ceiling, then Ceiling down to Floor
+    # This uses the HEIGHTS global [s1, s2, s3, s4] lists
+    bounce_path = HEIGHTS + HEIGHTS[-2:0:-1]
+    path_pairs = list(zip(bounce_path, bounce_path[1:] + [bounce_path[0]]))
     try:
         while True:
-            # Create a path: 0 to 24, then 24 down to 0
-            heights = list(range(side_length)) + list(range(side_length - 1, -1, -1))
-            
-            for h in heights:
-                # 1. Get current color
+            for current_step, next_step in path_pairs:
                 current_hex = hsl_to_hex(hue, 100, 50)
-                
-                # 2. Fire on all four sides at this specific height
-                await set_led(get_physical_id(h, 0), current_hex)
-                await set_led(get_physical_id(h, 1), current_hex)
-                await set_led(get_physical_id(h, 2), current_hex)
-                await set_led(get_physical_id(h, 3), current_hex)
-                
-                # 3. Advance the rainbow color
+                # You now have both objects ready to use
+                await set_led_multiple(next_step, current_hex, 0.5)
+                await set_led_multiple(current_step, current_hex, 1)
+                # ... do something with next_step ...
                 hue = (hue + 5) % 360 
                 
-                # 4. Control speed
-                await asyncio.sleep(speed)
-                
+                await asyncio.sleep(speed)                
     except asyncio.CancelledError:
         pass
 
@@ -204,13 +219,13 @@ rainbow_bounce.fader_speed = 0.80  # Nice trail as it bounces
 rainbow_bounce.anim_speed = 0.04   # Snappy movement
 
 
-async def rainbow_cycle(set_led, color, speed):
-    path = get_path()
+async def rainbow_cycle(set_led, set_led_multiple, color, speed):
+    
     try:
         # We add an 'offset' so the rainbow actually moves over time
         offset = 0
         while True:
-            for i, led_id in enumerate(path):
+            for i, led_id in enumerate(FULL_PATH):
                 # Calculate the hue based on position + time offset
                 hue = (i * 10 + offset) % 360
                 hex_color = hsl_to_hex(hue, 100, 50)
@@ -230,7 +245,146 @@ rainbow_cycle.use_fader = False # Rainbows usually look better crisp!
 rainbow_cycle.anim_speed = 0.05
 
 
-async def sparkle(set_led, color, speed):
+async def rainbow_fall(set_led, set_led_multiple, color, speed):
+    """
+    Creates 4 distinct rings of color that blend into each other.
+    The rings move vertically up the tower.
+    """
+    offset = 0
+    num_rings = 4
+    # Spacing determines how 'stretched' the rings are (360 / 4 rings = 90 degrees apart)
+    spacing = 360 / num_rings 
+    
+    try:
+        while True:
+            for h, step_ids in enumerate(HEIGHTS):
+                # 1. Calculate the hue for this specific 'ring' level
+                # (h / 25) spreads one full 360 loop across the 25 pixels
+                # multiplying by num_rings (4) creates the 4 distinct bands
+                hue = (offset + (h / 25) * 360 * (num_rings / 4)) % 360
+                
+                current_hex = hsl_to_hex(hue, 100, 50)
+                
+                # 2. Update all 4 LEDs at this height simultaneously
+                # This ensures the 'ring' is perfectly level across all sides
+                await set_led_multiple(step_ids, current_hex)
+            
+            # 3. Shift the rings upward
+            offset = (offset + 5) % 360
+            await asyncio.sleep(speed)
+            
+    except asyncio.CancelledError:
+        pass
+
+rainbow_fall.anim_speed = 0.05
+
+def rgb_to_hex_rainbow(r, g, b):
+    """
+    Converts 3 separate RGB floats/ints into a single Hex string.
+    Added guards to ensure values stay between 0-255.
+    """
+    # Clamp values to 0-255 and convert to int
+    r_int = max(0, min(255, int(r)))
+    g_int = max(0, min(255, int(g)))
+    b_int = max(0, min(255, int(b)))
+    return '#{:02x}{:02x}{:02x}'.format(r_int, g_int, b_int)
+
+async def rainbow_stationary(set_led, set_led_multiple, color, speed):
+    """
+    4 independent rings using RGB Vector Blending. 
+    Corrected function signature to prevent TypeError.
+    """
+    t = 0
+    try:
+        while True:
+            # 1. Generate 4 'Target' colors that pulse independently
+            targets = []
+            for i in range(4):
+                phase = i * 2.0  # Spread the starting colors out
+                r = 127.5 + 127.5 * math.sin(t * 0.3 + phase)
+                g = 127.5 + 127.5 * math.sin(t * 0.5 + phase + 2)
+                b = 127.5 + 127.5 * math.sin(t * 0.4 + phase + 4)
+                targets.append((r, g, b))
+
+            # 2. Vertical Blend using HEIGHTS global
+            for h, step_ids in enumerate(HEIGHTS):
+                # 25 rows / 4 zones = ~6.25 rows per zone
+                raw_zone = h / 6.25 
+                idx = int(raw_zone)
+                idx_next = min(idx + 1, 3)
+                blend = raw_zone - idx 
+
+                # Linear Interpolation (LERP) between the two closest rings
+                c1 = targets[idx]
+                c2 = targets[idx_next]
+                
+                res_r = c1[0] + (c2[0] - c1[0]) * blend
+                res_g = c1[1] + (c2[1] - c1[1]) * blend
+                res_b = c1[2] + (c2[2] - c1[2]) * blend
+                
+                # Pass 3 separate arguments to match the new rgb_to_hex signature
+                hex_color = rgb_to_hex_rainbow(res_r, res_g, res_b)
+                await set_led_multiple(step_ids, hex_color)
+            
+            # Control the speed of the color 'morphing'
+            t += 0.03 
+            await asyncio.sleep(speed)
+            
+    except asyncio.CancelledError:
+        pass
+
+rainbow_stationary.anim_speed = 0.05
+
+
+def rgb_to_hex_rainbow_rainbow(r, g, b):
+    """Safety-clamped RGB to Hex converter."""
+    r_int = max(0, min(255, int(r)))
+    g_int = max(0, min(255, int(g)))
+    b_int = max(0, min(255, int(b)))
+    return '#{:02x}{:02x}{:02x}'.format(r_int, g_int, b_int)
+
+def hex_to_rgb_tuple(hex_str):
+    hex_str = hex_str.lstrip('#')
+    return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
+
+async def rainbow_stationary_top_bottom(set_led, set_led_multiple, color, speed):
+    """
+    Two complementary rings (180° apart) using RGB Vector blending.
+    This eliminates the 'Green Flash' caused by Hue-based math.
+    """
+    t = 0
+    try:
+        while True:
+            # 1. Calculate the 'Anchor' Hue
+            hue_base = (180 + 180 * math.sin(t * 0.2)) % 360
+            
+            # 2. Convert HSL to RGB for both Top and Bottom
+            # Bottom is our base, Top is +180 (Opposite)
+            rgb_bottom = hex_to_rgb_tuple(hsl_to_hex(hue_base, 100, 50))
+            rgb_top = hex_to_rgb_tuple(hsl_to_hex((hue_base + 180) % 360, 100, 50))
+
+            for h, step_ids in enumerate(HEIGHTS):
+                # blend is 0.0 at bottom, 1.0 at top
+                blend = h / 24.0 
+
+                # 3. LERP (Linear Interpolation) in RGB space
+                # This 'slides' the color from Bottom to Top without 
+                # swinging around the color wheel into 'Green' territory.
+                r = rgb_bottom[0] + (rgb_top[0] - rgb_bottom[0]) * blend
+                g = rgb_bottom[1] + (rgb_top[1] - rgb_bottom[1]) * blend
+                b = rgb_bottom[2] + (rgb_top[2] - rgb_bottom[2]) * blend
+                
+                await set_led_multiple(step_ids, rgb_to_hex_rainbow_rainbow(r, g, b))
+            
+            t += 0.03
+            await asyncio.sleep(speed)
+            
+    except asyncio.CancelledError:
+        pass
+
+rainbow_stationary_top_bottom.anim_speed = 0.05
+
+async def sparkle(set_led, set_led_multiple, color, speed):
     async def flash_pixel(p):
         await set_led(p, color)
         # How long the 'blink' lasts (half the speed)
@@ -253,7 +407,7 @@ sparkle.use_fader = False
 sparkle.fader_speed = 1
 sparkle.animation_speed = 0.05
 
-async def rising_ring(set_led, color, speed):
+async def rising_ring(set_led, set_led_multiple, color, speed):
     try:
         while True:
             # Go Up (Floor 0 to 24)
@@ -283,7 +437,7 @@ async def rising_ring(set_led, color, speed):
         pass
 
 
-async def scanner(set_led, color, speed):
+async def scanner(set_led, set_led_multiple, color, speed):
     try:
         while True:
             # The range(25) handles the height
@@ -314,7 +468,7 @@ def rgb_to_hex(rgb):
     """Converts (R, G, B) tuple to #RRGGBB"""
     return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
 
-async def scanner_fade_in(set_led, color, speed):
+async def scanner_fade_in(set_led, set_led_multiple, color, speed):
     try:
         base_rgb = hex_to_rgb(color)
         
@@ -372,52 +526,52 @@ def dim_color(hex_str, factor):
     # 3. Convert back to hex string
     return '#{:02x}{:02x}{:02x}'.format(r, g, b)
 
-async def scanner_glow_ahead(set_led, color, speed):
+async def scanner_glow_ahead(set_led, set_led_multiple, color, speed):
     try:
         while True:
             # --- GOING UP ---
             # Range starts early so the scouts can "enter" the bottom of the stand
             for f in range(-4, 25):
                 # 1. The Far Scout (3 steps ahead, 25% brightness)
-                await set_floor(set_led, f + 3, dim_color(color, 0.10))
+                await set_floor(set_led, set_led_multiple, f + 3, dim_color(color, 0.10))
                 
                 # 2. The Mid Scout (2 steps ahead, 40% brightness)
-                await set_floor(set_led, f + 2, dim_color(color, 0.30))
+                await set_floor(set_led, set_led_multiple, f + 2, dim_color(color, 0.30))
                 
                 # 3. The Near Scout (1 step ahead, 60% brightness)
-                await set_floor(set_led, f + 1, dim_color(color, 0.70))
+                await set_floor(set_led, set_led_multiple, f + 1, dim_color(color, 0.70))
                 
                 # 4. The Lead Pixel (100% brightness)
-                await set_floor(set_led, f, color)
-                await set_floor(set_led, f - 1, dim_color(color, 0.70))
-                await set_floor(set_led, f - 2, dim_color(color, 0.30))
-                await set_floor(set_led, f - 3, dim_color(color, 0.10))
+                await set_floor(set_led, set_led_multiple, f, color)
+                await set_floor(set_led, set_led_multiple, f - 1, dim_color(color, 0.70))
+                await set_floor(set_led, set_led_multiple, f - 2, dim_color(color, 0.30))
+                await set_floor(set_led, set_led_multiple, f - 3, dim_color(color, 0.10))
                 
                 # 5. Cleanup (Turn off the floor we just left)
-                # await set_floor(set_led, f - 1, "#333")
+                # await set_floor(set_led, set_led_multiple, f - 1, "#333")
                 
                 await asyncio.sleep(speed)
 
             # --- GOING DOWN ---
             for f in range(28, -5, -1):
                 # When going down, "ahead" means subtracting from the floor
-                await set_floor(set_led, f - 3, dim_color(color, 0.10))
-                await set_floor(set_led, f - 2, dim_color(color, 0.30))
-                await set_floor(set_led, f - 1, dim_color(color, 0.70))
-                await set_floor(set_led, f, color)
-                await set_floor(set_led, f + 1, dim_color(color, 0.70))
-                await set_floor(set_led, f + 2, dim_color(color, 0.30))
-                await set_floor(set_led, f + 3, dim_color(color, 0.10))
+                await set_floor(set_led, set_led_multiple, f - 3, dim_color(color, 0.10))
+                await set_floor(set_led, set_led_multiple, f - 2, dim_color(color, 0.30))
+                await set_floor(set_led, set_led_multiple, f - 1, dim_color(color, 0.70))
+                await set_floor(set_led, set_led_multiple, f, color)
+                await set_floor(set_led, set_led_multiple, f + 1, dim_color(color, 0.70))
+                await set_floor(set_led, set_led_multiple, f + 2, dim_color(color, 0.30))
+                await set_floor(set_led, set_led_multiple, f + 3, dim_color(color, 0.10))
                 
                 # Cleanup (The floor above us)
-                await set_floor(set_led, f + 1, "#333")
+                await set_floor(set_led, set_led_multiple, f + 1, "#333")
                 
                 await asyncio.sleep(speed)
     except asyncio.CancelledError:
         pass
 
 
-async def set_floor(set_led, floor_height, color):
+async def set_floor(set_led, set_led_multiple, floor_height, color):
     """Lights up all 4 pillars at a specific height (0-24)"""
     if 0 <= floor_height < 25:
         ids = [
@@ -430,7 +584,7 @@ async def set_floor(set_led, floor_height, color):
             await set_led(led_id, color)
 
 
-async def scanner_glow_ahead(set_led, color, speed):
+async def scanner_glow_ahead(set_led, set_led_multiple, color, speed):
     try:
         offsets = [
             (3, 0.10), (2, 0.30), (1, 0.70), 
@@ -446,10 +600,10 @@ async def scanner_glow_ahead(set_led, color, speed):
             for offset, brightness in offsets:
                 # We DON'T await these individually to prevent stutter
                 # This prepares the 'frame'
-                asyncio.create_task(set_floor(set_led, pos + offset, dim_color(color, brightness)))
+                asyncio.create_task(set_floor(set_led, set_led_multiple, pos + offset, dim_color(color, brightness)))
             
             # 2. Clear the edges of the window
-            asyncio.create_task(set_floor(set_led, pos - 4 if direction == 1 else pos + 4, "#333"))
+            asyncio.create_task(set_floor(set_led, set_led_multiple, pos - 4 if direction == 1 else pos + 4, "#333"))
             
             # 3. NOW we pause. This is the 'Frame Rate'
             await asyncio.sleep(speed)
@@ -467,7 +621,7 @@ async def scanner_glow_ahead(set_led, color, speed):
         pass
 
 
-async def fire_flicker(set_led, color, speed):
+async def fire_flicker(set_led, set_led_multiple, color, speed):
     # We ignore the 'color' parameter and use fire colors: Red, Orange, Yellow
     fire_colors = ["#ff0000", "#ff4400", "#ff6600", "#ffaa00"]
     async def flash_pixel(p, colour):
@@ -500,7 +654,7 @@ fire_flicker.fader_speed = 0.9
 fire_flicker.animation_speed = 0.10
 
 
-async def breathing_pulse(set_led, color, speed):
+async def breathing_pulse(set_led, set_led_multiple, color, speed):
     try:
         while True:
             # Fade In
@@ -521,7 +675,7 @@ async def breathing_pulse(set_led, color, speed):
     except asyncio.CancelledError:
         pass
 
-async def fire_tower(set_led, color, speed):
+async def fire_tower(set_led, set_led_multiple, color, speed):
     """
     Simulates a fire at the base of the tower.
     Heat is strongest at the bottom and flickers towards the middle (floor 12).
@@ -545,14 +699,14 @@ async def fire_tower(set_led, color, speed):
                     flicker_color = colors[min(color_idx, 4)]
                     
                     # 3. Apply to all 4 pillars at once to keep the 'ring' feel
-                    await set_floor(set_led, floor, flicker_color)
+                    await set_floor(set_led, set_led_multiple, floor, flicker_color)
                 else:
                     # 4. If the flame doesn't reach here, keep it dark
-                    await set_floor(set_led, floor, "#333")
+                    await set_floor(set_led, set_led_multiple, floor, "#333")
             
             # Ensure the top half of the tower stays dark
             for floor in range(15, 25):
-                await set_floor(set_led, floor, "#333")
+                await set_floor(set_led, set_led_multiple, floor, "#333")
 
             # Speed slider controls the flicker rate
             await asyncio.sleep(speed * 2)
@@ -564,7 +718,7 @@ fire_tower.fader_speed = 0.8
 fire_tower.animation_speed = 0.10
 
 
-async def startup_sequence(set_led, color, speed):
+async def startup_sequence(set_led, set_led_multiple, color, speed):
     """
     Sparkles for 3 seconds, then fades into 50% white.
     """
@@ -608,7 +762,7 @@ async def startup_sequence(set_led, color, speed):
         pass
 
 
-async def spinning_columns(set_led, color, speed):
+async def spinning_columns(set_led, set_led_multiple, color, speed):
     side_length = 25
     
     try:
@@ -647,7 +801,7 @@ async def spinning_columns(set_led, color, speed):
 spinning_columns.use_fader = False
 spinning_columns.anim_speed = 0.2
 
-async def spinning_columns_fade(set_led, color, speed):
+async def spinning_columns_fade(set_led, set_led_multiple, color, speed):
     side_length = 25
     hue_primary = random.randint(0, 360)
     hue_secondary = (hue_primary + 180) % 360  # Opposite colors
