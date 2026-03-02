@@ -77,7 +77,7 @@ async def main():
     
     # Run the startup sequence
     print("--- POWERING UP ---")
-    active_task = asyncio.create_task(LEDTower1.startup_sequence(pi_set_led, "#ffffff", 0.05))
+    active_task = asyncio.create_task(LEDTower1.startup_sequence(pi_set_led, set_led_multiple, "#ffffff", 0.05))
     asyncio.create_task(auto_fader_loop())
     while True:
         # 1. List the available options
