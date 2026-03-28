@@ -5,7 +5,7 @@ import LEDTower1
 import sys
 import json
 import os
-import random # Added this for the dissolve transition!
+import random
 from luma.core.interface.serial import i2c
 from luma.oled.device import sh1106
 from luma.core.render import canvas
@@ -64,6 +64,7 @@ def get_anim_settings(func):
 # --- 4. State Variables ---
 menu_mode = "MAIN" 
 active_task = None
+active_fade_task = None
 current_anim_name = ""
 selected_anim_title = ""
 live_menu_idx = 0
@@ -85,6 +86,21 @@ async def pi_set_led_multiple(led_ids, color_array=None, brightness=1.0):
                 pixels[lid] = tuple(int(c * brightness) for c in raw_color)
         pixels.show()
     except: pass
+
+async def fade_in_routine(target_b):
+    """Smoothly ramps up the global brightness after an animation starts."""
+    try:
+        steps = 20
+        for i in range(1, steps + 1):
+            pixels.brightness = (i / steps) * target_b
+            pixels.show()
+            await asyncio.sleep(0.04)
+            
+        pixels.brightness = target_b
+        pixels.show()
+    except asyncio.CancelledError:
+        pixels.brightness = target_b
+        pixels.show()
 
 async def play_transition():
     """Reads the 'stop' settings and plays a dissolve effect between animations."""
@@ -117,19 +133,25 @@ async def play_transition():
         pixels.show()
 
 async def run_anim(name):
-    global active_task, selected_anim_title, current_anim_name
+    global active_task, selected_anim_title, current_anim_name, active_fade_task
     
-    # 1. Gracefully stop current task and run transition
+    # 1. Cancel fade and run transition
+    if active_fade_task:
+        active_fade_task.cancel()
+        pixels.brightness = user_data["brightness"]
+        
     if active_task: 
         active_task.cancel()
-        try:
-            await active_task
-        except asyncio.CancelledError:
-            pass
+        try: await active_task
+        except asyncio.CancelledError: pass
         
         await play_transition()
     
-    # 2. Setup new animation
+    # 2. Prep for fade-in
+    target_brightness = user_data["brightness"]
+    pixels.brightness = 0.0 
+    
+    # 3. Setup new animation
     current_anim_name = name
     func = getattr(LEDTower1, name)
     selected_anim_title = getattr(func, 'title', name.replace('_', ' ').title())
@@ -150,7 +172,9 @@ async def run_anim(name):
             else:
                 setattr(func, key, val)
     
+    # 4. Start tasks
     active_task = asyncio.create_task(func(pi_set_led, pi_set_led_multiple, tuple(user_data["mainColor"]), 0))
+    active_fade_task = asyncio.create_task(fade_in_routine(target_brightness))
 
 # --- 6. Hardware Loop ---
 async def hardware_loop():
@@ -238,3 +262,80 @@ async def hardware_loop():
                 val = options[idx]
             elif is_bool: 
                 val = (int(encoder.steps) % 2 != 0)
+            elif is_step_type: 
+                val = max(1, min(10, int(encoder.steps)))
+                encoder.steps = val
+            else: 
+                val = max(1, min(100, int(encoder.steps)))
+                encoder.steps = val
+
+            if val != last_encoder_val:
+                with canvas(device) as draw:
+                    draw.text((5, 5), f"EDIT: {edit_attr_name}", fill="white")
+                    draw.line((0, 15, 128, 15), fill="white")
+
+                    if is_list:
+                        for i in range(-1, 2):
+                            curr_opt_idx = idx + i
+                            if 0 <= curr_opt_idx < len(options):
+                                prefix = "> " if i == 0 else "  "
+                                draw.text((10, 32 + (i * 12)), f"{prefix}{options[curr_opt_idx]}", fill="white")
+                    elif is_bool:
+                        status = "ON" if val else "OFF"
+                        draw.rectangle((30, 30, 90, 50), outline="white", fill="white" if val else "black")
+                        draw.text((50, 35), status, fill="black" if val else "white")
+                    else:
+                        bar_w = val * 10 if is_step_type else val
+                        draw.rectangle((10, 35, 10 + bar_w, 45), outline="white", fill="white")
+                        draw.text((10, 50), f"Value: {val}", fill="white")
+                
+                last_encoder_val = val
+                if edit_attr_key == "GLOBAL_BRIGHT":
+                    user_data["brightness"] = val / 10.0
+                    pixels.brightness = user_data["brightness"]
+                    pixels.show()
+                elif is_list:
+                    setattr(getattr(LEDTower1, current_anim_name), edit_attr_key + "_choice", val)
+                else:
+                    setattr(getattr(LEDTower1, current_anim_name), edit_attr_key, val)
+
+            if btn_select.is_pressed:
+                if current_anim_name not in user_data["animation_data"]: 
+                    user_data["animation_data"][current_anim_name] = {}
+                if edit_attr_key != "GLOBAL_BRIGHT":
+                    user_data["animation_data"][current_anim_name][edit_attr_key] = val
+                
+                save_settings(user_data)
+                menu_mode = "ANIM_MENU"
+                last_encoder_val = -1
+                while btn_select.is_pressed: await asyncio.sleep(0.1)
+
+        # --- OFF BUTTON ---
+        if btn_bottom.is_pressed:
+            if active_fade_task:
+                active_fade_task.cancel()
+                pixels.brightness = user_data["brightness"]
+                
+            if active_task: 
+                active_task.cancel()
+                try: await active_task
+                except asyncio.CancelledError: pass
+            
+            await play_transition() 
+            menu_mode = "MAIN"
+            last_encoder_val = -1
+            encoder.steps = 0
+            while btn_bottom.is_pressed: await asyncio.sleep(0.1)
+            
+        await asyncio.sleep(0.05)
+
+async def main():
+    saved_anim = user_data.get("last_anim", "")
+    if saved_anim and hasattr(LEDTower1, saved_anim): await run_anim(saved_anim)
+    elif LEDTower1.__all__: await run_anim(LEDTower1.__all__[0])
+    await hardware_loop()
+
+if __name__ == "__main__":
+    try: asyncio.run(main())
+    except KeyboardInterrupt:
+        pixels.fill((0,0,0)); pixels.show()
