@@ -529,4 +529,172 @@ helix_spin.attr_step_speed = 1
 helix_spin.attr_step_width = 10
 helix_spin.attr_list_theme = ["Bio-Green", "Neon Barber", "Ice Swirl", "Synthwave"]
 
-__all__ = ['plain_white', "helix_spin", "lava_lamp", 'matrix_rain', 'sparkle', 'fire_tower', 'rainbow_stationary', 'stop']
+
+async def champagne(set_led, set_led_multiple, main_color, speed):
+    """A realistic bubbling fluid effect."""
+    
+    def get_pixel(x, y):
+        # x is the column (0 to 3)
+        # y is the height (0 to 24)
+        if x % 2 != 0: 
+            # Odd index (Columns 2 and 4) physical layout goes top-to-bottom
+            return (x * 25) + (24 - y)
+        else:
+            # Even index (Columns 1 and 3) go bottom-to-top
+            return (x * 25) + y
+
+    bubbles = []
+    
+    while True:
+        # 1. Grab live settings from the OLED menu
+        spawn_rate = getattr(champagne, 'attr_int_spawn_rate', 4)
+        move_speed = getattr(champagne, 'attr_step_speed', 5)
+        palette = getattr(champagne, 'attr_list_color_palette_choice', "Classic Gold")
+        
+        # 2. Spawn new bubbles at the bottom
+        if random.randint(1, 10) <= spawn_rate:
+            col = random.randint(0, 3)
+            # Give each bubble a slightly randomized upward velocity
+            velocity = random.uniform(0.1, 0.4) * move_speed 
+            bubbles.append({'x': col, 'y': 0.0, 'speed': velocity})
+            
+        # 3. Update bubble physics
+        for b in bubbles:
+            b['y'] += b['speed'] # Move up
+            
+            # 10% chance to wobble left or right to simulate fluid dynamics
+            if random.randint(1, 100) > 90:
+                direction = random.choice([-1, 1])
+                b['x'] = max(0, min(3, b['x'] + direction))
+                
+        # 4. Pop bubbles that reach the top
+        bubbles = [b for b in bubbles if b['y'] < 24.5]
+        
+        # 5. Render the frame
+        frame_colors = [(0, 0, 0)] * 100
+        
+        for b in bubbles:
+            px_idx = get_pixel(int(b['x']), int(b['y']))
+            if 0 <= px_idx < 100:
+                if palette == "Classic Gold":
+                    c = (255, 170, 40)
+                elif palette == "Deep Ocean":
+                    c = (0, 150, 255)
+                elif palette == "White Frost":
+                    c = (255, 255, 255)
+                else: # Random Synthwave
+                    c = random.choice([(255, 0, 100), (0, 255, 200), (150, 0, 255)])
+                    
+                frame_colors[px_idx] = c
+                
+        await set_led_multiple(list(range(100)), frame_colors)
+        await asyncio.sleep(0.04)
+
+champagne.title = "Champagne"
+champagne.attr_int_spawn_rate = 4
+champagne.attr_step_speed = 5
+champagne.attr_list_color_palette = ["Classic Gold", "Deep Ocean", "White Frost", "Synthwave"]
+
+async def sunrise(set_led, set_led_multiple, main_color, speed):
+    """Simulates a massive, solid red-orange sunrise with sharp edge fading."""
+    start_time = time.time()
+    
+    # --- COLOR GRADIENTS ---
+    SKY_STOPS = [
+        (0.00, (0, 0, 0)),
+        (0.20, (5, 0, 15)),
+        (0.50, (30, 10, 50)),
+        (0.80, (80, 50, 120)),
+        (1.00, (120, 180, 255))
+    ]
+    
+    # Sun goes from black -> deep red -> fiery red-orange
+    SUN_STOPS = [
+        (0.00, (0, 0, 0)),
+        (0.15, (150, 0, 0)),
+        (0.40, (255, 10, 0)),     
+        (0.70, (255, 35, 0)),     
+        (0.90, (255, 65, 0)),     
+        (1.00, (255, 90, 0))      # Fiery, red-heavy orange peak
+    ]
+    
+    def get_color(stops, p):
+        p = max(0.0, min(1.0, p))
+        for i in range(len(stops)-1):
+            if stops[i][0] <= p <= stops[i+1][0]:
+                span = stops[i+1][0] - stops[i][0]
+                local_p = (p - stops[i][0]) / span
+                c1, c2 = stops[i][1], stops[i+1][1]
+                return (
+                    int(c1[0] + (c2[0] - c1[0]) * local_p),
+                    int(c1[1] + (c2[1] - c1[1]) * local_p),
+                    int(c1[2] + (c2[2] - c1[2]) * local_p)
+                )
+        return stops[-1][1]
+
+    all_ids = list(range(100))
+    tower_heights = globals().get('HEIGHTS', [])
+    
+    try:
+        while True:
+            mins = getattr(sunrise, 'attr_int_duration_mins', 15)
+            fast_test = getattr(sunrise, 'attr_bool_fast_test_mode', False)
+            
+            duration_sec = 30.0 if fast_test else (mins * 60.0)
+            elapsed = time.time() - start_time
+            progress = min(1.0, elapsed / duration_sec)
+            
+            # 2. Sun Physics (NEW SOLID CORE MATH)
+            sun_y = progress * 12.0 # Rises to exact center
+            
+            # The sun's 100% solid core expands to 10.5 rows above and below center
+            # This covers roughly 21 of the 25 rows (84% of the tower)
+            core_radius = progress * 10.5 
+            
+            # The fade only happens over the remaining 2 rows on either end
+            fade_distance = 2.0 
+            
+            sky_c = get_color(SKY_STOPS, progress)
+            sun_c = get_color(SUN_STOPS, progress)
+            
+            frame = [(0, 0, 0)] * 100
+            
+            if tower_heights:
+                for f in range(25):
+                    dist = abs(f - sun_y)
+                    
+                    # If this floor is inside the core, it is 100% sun. 
+                    if dist <= core_radius:
+                        intensity = 1.0
+                    # If it's outside the core, rapidly fade it into the sky over 2 rows.
+                    else:
+                        intensity = max(0.0, 1.0 - ((dist - core_radius) / fade_distance))
+                    
+                    r = int((sun_c[0] * intensity) + (sky_c[0] * (1.0 - intensity)))
+                    g = int((sun_c[1] * intensity) + (sky_c[1] * (1.0 - intensity)))
+                    b = int((sun_c[2] * intensity) + (sky_c[2] * (1.0 - intensity)))
+                    
+                    master_dim = min(1.0, progress * 10)
+                    final_c = (int(r * master_dim), int(g * master_dim), int(b * master_dim))
+                    
+                    if f < len(tower_heights):
+                        for lid in tower_heights[f]:
+                            if 0 <= lid < 100:
+                                frame[lid] = final_c
+                        
+            await set_led_multiple(all_ids, frame)
+            
+            if progress >= 1.0:
+                await asyncio.sleep(1.0)
+            else:
+                await asyncio.sleep(0.05)
+                
+    except asyncio.CancelledError:
+        pass
+
+# --- Menu Attributes ---
+sunrise.title = "Sunrise Alarm"
+sunrise.attr_int_duration_mins = 15
+sunrise.attr_bool_fast_test_mode = True
+
+__all__ = ['plain_white', 'sunrise', "champagne", "helix_spin", "lava_lamp", 'matrix_rain', 'sparkle', 'fire_tower', 'rainbow_stationary', 'stop']
