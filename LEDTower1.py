@@ -1,33 +1,41 @@
-import asyncio
+import uasyncio as asyncio
 import random
-import colorsys
 import math
 import time
+import colorsys
+
+# --- Pre-calculated Sine Table (0-255) ---
+SIN_TABLE = [math.sin(i * 2 * math.pi / 256) for i in range(256)]
+
+def fast_sin(angle_rad):
+    # Converts radians to an index in our 256-step table
+    idx = int(angle_rad * 40.7436) % 256
+    return SIN_TABLE[idx]
 
 # --- 1. NETWORK & MAPPING SETUP ---
 S1 = list(range(0, 25))
-S2 = list(range(49, 24, -1)) # Physically upside down
+S2 = list(range(49, 24, -1)) 
 S3 = list(range(50, 75))
-S4 = list(range(99, 74, -1)) # Physically upside down
+S4 = list(range(99, 74, -1)) 
 
 FULL_PATH = S1 + S2 + S3 + S4
 HEIGHTS = [list(step) for step in zip(S1, S2, S3, S4)]
 NUM_PIXELS = 100
 
-# --- 2. COLOR HELPERS ---
+# --- 2. MICROPYTHON FUNCTION WRAPPER ---
+# This class wraps our locked MicroPython functions so they can hold our menu attributes!
+class Anim:
+    def __init__(self, func):
+        self.func = func
+    def __call__(self, *args, **kwargs):
+        return self.func(*args, **kwargs)
 
-def hsl_to_rgb(h, s, l):
-    """Returns a (r, g, b) tuple 0-255."""
-    r, g, b = colorsys.hls_to_rgb(h / 360.0, l / 100.0, s / 100.0)
-    return (int(r * 255), int(g * 255), int(b * 255))
-
+# --- 3. COLOR HELPERS ---
 def hex_to_rgb_tuple(hex_str):
-    """Converts #RRGGBB to (R, G, B) tuple."""
     hex_str = hex_str.lstrip('#')
     return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
 
 def color_wheel(pos):
-    """Generates a smooth rainbow color based on a 0-255 position."""
     if pos < 85:
         return (pos * 3, 255 - pos * 3, 0)
     elif pos < 170:
@@ -40,53 +48,41 @@ def color_wheel(pos):
 def get_ring_indices(h):
     return [h, 49 - h, 50 + h, 99 - h]
 
-# --- 3. ANIMATION LIBRARY ---
+# --- 4. ANIMATION LIBRARY ---
 
+@Anim
 async def stop(set_led, set_led_multiple, color, speed):
     """Stops the animation: Instantly or with a randomized Power Down Dissolve."""
     all_ids = list(range(100))
-    
     try:
-        # 1. Grab attributes
         use_fader = getattr(stop, 'attr_bool_use_fader', True)
         fader_speed = getattr(stop, 'attr_int_fader_speed', 75)
         
         if not use_fader:
-            # --- INSTANT OFF ---
             await set_led_multiple(all_ids, [(0, 0, 0)] * 100)
         else:
-            # --- POWER DOWN DISSOLVE ---
-            # Speed math: How many pixels turn off per frame (1 to 10)
             chunk_size = max(1, int(fader_speed / 10))
-            # Speed math: How fast the frames update
             delay = max(0.02, 0.15 - (fader_speed * 0.001)) 
             
-            # Create a list of all LEDs and shuffle them
             active_pixels = list(range(100))
             random.shuffle(active_pixels)
             
-            # Fizzle them out a few at a time
             while active_pixels:
                 to_turn_off = active_pixels[:chunk_size]
-                active_pixels = active_pixels[chunk_size:] # Remove them from the active list
-                
+                active_pixels = active_pixels[chunk_size:] 
                 await set_led_multiple(to_turn_off, [(0, 0, 0)] * len(to_turn_off))
                 await asyncio.sleep(delay)
         
-        # 2. The Holding Pattern
-        # Once the tower is dark, we keep the task alive but sleeping 
-        # so it doesn't instantly restart or exit.
         while True:
             await asyncio.sleep(0.5)
-
     except asyncio.CancelledError:
         pass
 
-# --- Attributes ---
 stop.title = "Stop Animation"
 stop.attr_bool_use_fader = True
 stop.attr_int_fader_speed = 75
 
+@Anim
 async def plain_white(set_led, set_led_multiple, color, speed):
     """Fades in the entire tower to 50% white."""
     all_ids = [lid for floor in HEIGHTS for lid in floor]
@@ -96,7 +92,6 @@ async def plain_white(set_led, set_led_multiple, color, speed):
         while brightness <= 1:
             brightness += 0.01
             await set_led_multiple(all_ids, white_array, brightness=brightness)
-            # Use the dynamic attribute for speed
             sleep_time = 0.11 - (getattr(plain_white, 'attr_step_speed', 5) * 0.01)
             await asyncio.sleep(max(0.01, sleep_time))
     except asyncio.CancelledError: pass
@@ -104,6 +99,7 @@ async def plain_white(set_led, set_led_multiple, color, speed):
 plain_white.title = "Plain White"
 plain_white.attr_step_speed = 10
 
+@Anim
 async def rainbow_stationary(set_led, set_led_multiple, color, speed):
     """4 independent morphing rings using RGB Vector Blending."""
     t = 0
@@ -137,32 +133,25 @@ async def rainbow_stationary(set_led, set_led_multiple, color, speed):
 rainbow_stationary.title = "Rainbow"
 rainbow_stationary.attr_step_speed = 5
 
+@Anim
 async def fire_tower(set_led, set_led_multiple, color, speed):
     """Fire Tower"""
-    
-    # --- 🎨 COLOR THRESHOLDS 🎨 ---
     T_WHITE  = 240
     T_YELLOW = 200
     T_GOLD   = 135
     T_ORANGE = 80
     T_RED    = 35
     T_EMBER  = 5
-    # ------------------------------
 
     heat = [0.0] * 25
     all_ids = [lid for floor in HEIGHTS for lid in floor]
 
     try:
         while True:
-            # 1. LIVE MENU ATTRIBUTES 
             s_val = getattr(fire_tower, 'attr_step_speed', 8)       
             v_val = getattr(fire_tower, 'attr_step_velocity', 5)    
             step_height = getattr(fire_tower, 'attr_step_height', 5) 
             step_sparking = getattr(fire_tower, 'attr_step_sparking', 5) 
-            
-            # --- 📝 TEXT LIST LOGIC 📝 ---
-            # We look for the user's saved choice. If they haven't picked one yet, 
-            # we default to the first item in the list!
             theme_name = getattr(fire_tower, 'attr_list_theme_choice', fire_tower.attr_list_theme[0])
 
             h_scale = step_height * 10
@@ -199,7 +188,6 @@ async def fire_tower(set_led, set_led_multiple, color, speed):
             heat[1] = max(145, heat[1]) 
             heat[2] = max(115, heat[2]) 
 
-            # 6. TEXT THEME MAPPING
             frame_colors = []
             for i, h_val in enumerate(heat):
                 r, g, b = 0, 0, 0
@@ -247,9 +235,9 @@ fire_tower.attr_step_speed = 8
 fire_tower.attr_step_velocity = 5   
 fire_tower.attr_step_height = 3   
 fire_tower.attr_step_sparking = 3  
-# NEW: The list of text options for the OLED menu!
 fire_tower.attr_list_theme = ["Classic Red", "Ice Blue", "Toxic Green", "Plasma Purple"]
 
+@Anim
 async def sparkle(set_led, set_led_multiple, color, speed):
     """Randomly pops pixels on/off."""
     if isinstance(color, str): color = hex_to_rgb_tuple(color)
@@ -271,6 +259,7 @@ async def sparkle(set_led, set_led_multiple, color, speed):
 sparkle.title = "Sparkle"
 sparkle.attr_step_speed = 5
 
+@Anim
 async def startup_sequence(set_led, set_led_multiple, color, speed):
     num_pixels = 100
     all_ids = list(range(num_pixels))
@@ -292,8 +281,9 @@ async def startup_sequence(set_led, set_led_multiple, color, speed):
             await asyncio.sleep(0.04)
     except asyncio.CancelledError: pass
 
+@Anim
 async def matrix_rain(set_led, set_led_multiple, color, speed):
-    """Matrix Rain: White heads for classic themes, pure color for Rainbow."""
+    """Matrix Rain"""
     num_floors = 25
     num_cols = 4
     trails = [[0.0] * num_floors for _ in range(num_cols)]
@@ -315,12 +305,10 @@ async def matrix_rain(set_led, set_led_multiple, color, speed):
 
     try:
         while True:
-            # 1. Grab attributes
             s_val = getattr(matrix_rain, 'attr_step_speed', 7)
             density = getattr(matrix_rain, 'attr_step_density', 5)
             theme = getattr(matrix_rain, 'attr_list_theme_choice', 'Rainbow Rain')
             
-            # 2. Physics Logic
             for col in range(num_cols):
                 if heads[col] < 0:
                     if random.random() < (density * 0.05):
@@ -334,7 +322,6 @@ async def matrix_rain(set_led, set_led_multiple, color, speed):
                     if heads[col] == f:
                         trails[col][f] = 1.0
 
-            # 3. Optimized Color Mapping
             frame_colors = [(0, 0, 0)] * 100
             
             for col in range(num_cols):
@@ -344,7 +331,6 @@ async def matrix_rain(set_led, set_led_multiple, color, speed):
                     
                     is_head = (f == heads[col])
                     
-                    # --- RESTORED: White-hot heads for classic themes ---
                     if theme == "Code Green":
                         r, g, b_val = (200, 255, 200) if is_head else (0, 255, 0)
                     elif theme == "Cyber Red":
@@ -352,119 +338,99 @@ async def matrix_rain(set_led, set_led_multiple, color, speed):
                     elif theme == "Deep Sea":
                         r, g, b_val = (200, 200, 255) if is_head else (0, 80, 255)
                     else: 
-                        # --- KEPT: Pure color heads exclusively for Rainbow ---
                         current_hue = drop_hues[col] + (f * 3) 
                         r, g, b_val = wheel(current_hue)
 
                     final_rgb = (int(r * b), int(g * b), int(b_val * b))
-
-                    # Map directly using your pre-flipped HEIGHTS map
                     led_id = HEIGHTS[f][col]
                     frame_colors[led_id] = final_rgb
 
-            # 4. Update LEDs
             await set_led_multiple(all_ids, frame_colors)
             await asyncio.sleep(max(0.05, 0.2 - (s_val * 0.015)))
 
     except asyncio.CancelledError:
         pass
 
-# --- Attributes ---
 matrix_rain.title = "Matrix Rain"
 matrix_rain.attr_step_speed = 7
 matrix_rain.attr_step_density = 5
 matrix_rain.attr_list_theme = ["Rainbow Rain", "Code Green", "Cyber Red", "Deep Sea"]
 
-
+@Anim
 async def lava_lamp(set_led, set_led_multiple, color, speed):
-    """Ambient Lava Lamp: Smooth, slow-moving blobs of color."""
-    num_floors = 25
-    num_cols = 4
     all_ids = list(range(100))
-
+    # Pre-allocate static frame buffer to avoid garbage collection churn
+    frame_colors = [(0, 0, 0)] * 100
+    
+    # Cache local attributes outside the tight loop
+    last_s_val = -1
+    last_visc = -1
+    last_theme = ""
+    bg, lava = (40, 0, 0), (255, 100, 0)
+    freq = 0.1
+    
     try:
         while True:
-            # 1. Grab attributes
+            # Only pull config changes if needed, or keep it lightweight
             s_val = getattr(lava_lamp, 'attr_step_speed', 3)
             visc = getattr(lava_lamp, 'attr_step_viscosity', 5)
             theme = getattr(lava_lamp, 'attr_list_theme_choice', '70s Orange')
             
-            # Setup colors based on theme (Background -> Lava Core)
-            if theme == "70s Orange":
-                bg = (40, 0, 0)
-                lava = (255, 100, 0)
-            elif theme == "Deep Space Violet":
-                bg = (10, 0, 40)
-                lava = (200, 0, 255)
-            elif theme == "Oceanic":
-                bg = (0, 10, 40)
-                lava = (0, 200, 255)
-            else: # Radioactive
-                bg = (0, 20, 0)
-                lava = (150, 255, 0)
+            # Update theme colors only when theme changes
+            if theme != last_theme:
+                last_theme = theme
+                if theme == "70s Orange": bg, lava = (40, 0, 0), (255, 100, 0)
+                elif theme == "Deep Space Violet": bg, lava = (10, 0, 40), (200, 0, 255)
+                elif theme == "Oceanic": bg, lava = (0, 10, 40), (0, 200, 255)
+                else: bg, lava = (0, 20, 0), (150, 255, 0)
 
-            # 2. Time and Math Scaling
-            # We use time to smoothly drive the sine waves upward
+            if visc != last_visc:
+                last_visc = visc
+                freq = 0.1 + (visc * 0.02)
+
             t = time.time() * (s_val * 0.3)
-            freq = 0.1 + (visc * 0.02) # Viscosity changes how "stretched" the blobs are
-
-            frame_colors = [(0, 0, 0)] * 100
             
-            # 3. Fluid Math
-            for col in range(num_cols):
-                # Offset each column slightly so the 4 sides don't look identical
+            bg_r, bg_g, bg_b = bg
+            lr_r, lr_g, lr_b = lava
+            r_diff = lr_r - bg_r
+            g_diff = lr_g - bg_g
+            b_diff = lr_b - bg_b
+
+            for col in range(4):
                 col_offset = col * 2.5 
-                
-                for f in range(num_floors):
-                    # Combine two sine waves moving at different speeds to create
-                    # the organic "blob splitting and merging" effect.
-                    wave1 = math.sin((f * freq) - t + col_offset)
-                    wave2 = math.sin((f * freq * 1.3) - (t * 0.7) + col_offset)
+                col_base = col * 25
+                for f in range(25):
+                    w1 = fast_sin((f * freq) - t + col_offset)
+                    w2 = fast_sin((f * freq * 1.3) - (t * 0.7) + col_offset)
                     
-                    # Normalize the result from roughly [-2, 2] to [0, 1]
-                    combined = (wave1 + wave2 + 2) / 4.0
+                    intensity = ((w1 + w2 + 2) * 0.25) ** 3
                     
-                    # Apply a "power curve" to make distinct blobs instead of a soft wash
-                    intensity = combined ** 3 
-                    
-                    # Interpolate between background and lava color
-                    r = int(bg[0] + (lava[0] - bg[0]) * intensity)
-                    g = int(bg[1] + (lava[1] - bg[1]) * intensity)
-                    b_val = int(bg[2] + (lava[2] - bg[2]) * intensity)
-                    
-                    # Safety clamp to ensure we don't exceed max brightness
-                    r = max(0, min(255, r))
-                    g = max(0, min(255, g))
-                    b_val = max(0, min(255, b_val))
-
-                    # Map directly using your pre-flipped HEIGHTS map!
                     led_id = HEIGHTS[f][col]
-                    frame_colors[led_id] = (r, g, b_val)
+                    frame_colors[led_id] = (
+                        int(bg_r + r_diff * intensity),
+                        int(bg_g + g_diff * intensity),
+                        int(bg_b + b_diff * intensity)
+                    )
 
-            # 4. Update LEDs
             await set_led_multiple(all_ids, frame_colors)
-            
-            # Lava lamps are slow! Keep the sleep generous to save CPU.
-            await asyncio.sleep(0.05)
-
+            await asyncio.sleep(0) # Yield control immediately without artificial lag
     except asyncio.CancelledError:
         pass
 
-# --- Attributes ---
 lava_lamp.title = "Lava Lamp"
 lava_lamp.attr_step_speed = 3
 lava_lamp.attr_step_viscosity = 5
 lava_lamp.attr_list_theme = ["70s Orange", "Deep Space Violet", "Oceanic", "Radioactive"]
 
+@Anim
 async def helix_spin(set_led, set_led_multiple, color, speed):
-    """Helix Spin: True 3D rotation using smooth cosine waves to prevent gap flickering."""
+    """Helix Spin"""
     num_floors = 25
     num_cols = 4
     all_ids = list(range(100))
 
     try:
         while True:
-            # 1. Grab attributes
             s_val = getattr(helix_spin, 'attr_step_speed', 5)
             width = getattr(helix_spin, 'attr_step_width', 5)  
             theme = getattr(helix_spin, 'attr_list_theme_choice', 'Bio-Green')
@@ -475,44 +441,32 @@ async def helix_spin(set_led, set_led_multiple, color, speed):
                 c1, c2, bg = (255, 0, 0), (255, 255, 255), (0, 0, 20)
             elif theme == "Ice Swirl":
                 c1, c2, bg = (0, 200, 255), (200, 0, 255), (0, 0, 10)
-            else: # Synthwave
+            else: 
                 c1, c2, bg = (255, 0, 150), (0, 255, 255), (10, 0, 10)
 
-            # 2. Time and Math Scaling
             t = time.time() * (s_val * 0.8)
             twist = 0.5  
-            
-            # Adjusted width factor so it pinches the light smoothly
             width_factor = 1.0 + ((10 - width) * 0.3) 
 
             frame_colors = [(0, 0, 0)] * 100
             
-            # 3. True 3D Wrap-Around Math
             for f in range(num_floors):
-                # Convert height and time into an angle (radians)
                 angle1 = t + (f * twist)
-                angle2 = angle1 + math.pi # Opposite side of the cylinder
+                angle2 = angle1 + math.pi 
 
                 for col in range(num_cols):
-                    # Each column is a 90-degree (pi/2) slice of the cylinder
                     col_angle = col * (math.pi / 2)
-                    
-                    # math.cos() gives us the perfect 3D distance (-1.0 to 1.0)
                     diff1 = math.cos(col_angle - angle1)
                     diff2 = math.cos(col_angle - angle2)
                     
-                    # Ignore the negative side of the cylinder, and apply the width curve
                     b1 = max(0.0, diff1) ** width_factor
                     b2 = max(0.0, diff2) ** width_factor
                     
-                    # Blend the colors together over the background
                     r = int((c1[0] * b1) + (c2[0] * b2) + bg[0])
                     g = int((c1[1] * b1) + (c2[1] * b2) + bg[1])
                     b_val = int((c1[2] * b1) + (c2[2] * b2) + bg[2])
                     
-                    r = max(0, min(255, r))
-                    g = max(0, min(255, g))
-                    b_val = max(0, min(255, b_val))
+                    r, g, b_val = max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b_val))
                     
                     led_id = HEIGHTS[f][col]
                     frame_colors[led_id] = (r, g, b_val)
@@ -523,100 +477,64 @@ async def helix_spin(set_led, set_led_multiple, color, speed):
     except asyncio.CancelledError:
         pass
 
-# --- Attributes ---
 helix_spin.title = "Helix Spin"
 helix_spin.attr_step_speed = 1
 helix_spin.attr_step_width = 10
 helix_spin.attr_list_theme = ["Bio-Green", "Neon Barber", "Ice Swirl", "Synthwave"]
 
-
+@Anim
 async def champagne(set_led, set_led_multiple, main_color, speed):
-    """A realistic bubbling fluid effect."""
-    
+    """Champagne bubbles"""
     def get_pixel(x, y):
-        # x is the column (0 to 3)
-        # y is the height (0 to 24)
-        if x % 2 != 0: 
-            # Odd index (Columns 2 and 4) physical layout goes top-to-bottom
-            return (x * 25) + (24 - y)
-        else:
-            # Even index (Columns 1 and 3) go bottom-to-top
-            return (x * 25) + y
+        if x % 2 != 0: return (x * 25) + (24 - y)
+        else: return (x * 25) + y
 
     bubbles = []
-    
-    while True:
-        # 1. Grab live settings from the OLED menu
-        spawn_rate = getattr(champagne, 'attr_int_spawn_rate', 4)
-        move_speed = getattr(champagne, 'attr_step_speed', 5)
-        palette = getattr(champagne, 'attr_list_color_palette_choice', "Classic Gold")
-        
-        # 2. Spawn new bubbles at the bottom
-        if random.randint(1, 10) <= spawn_rate:
-            col = random.randint(0, 3)
-            # Give each bubble a slightly randomized upward velocity
-            velocity = random.uniform(0.1, 0.4) * move_speed 
-            bubbles.append({'x': col, 'y': 0.0, 'speed': velocity})
+    try:
+        while True:
+            spawn_rate = getattr(champagne, 'attr_int_spawn_rate', 4)
+            move_speed = getattr(champagne, 'attr_step_speed', 5)
+            palette = getattr(champagne, 'attr_list_color_palette_choice', "Classic Gold")
             
-        # 3. Update bubble physics
-        for b in bubbles:
-            b['y'] += b['speed'] # Move up
-            
-            # 10% chance to wobble left or right to simulate fluid dynamics
-            if random.randint(1, 100) > 90:
-                direction = random.choice([-1, 1])
-                b['x'] = max(0, min(3, b['x'] + direction))
+            if random.randint(1, 10) <= spawn_rate:
+                col = random.randint(0, 3)
+                velocity = random.uniform(0.1, 0.4) * move_speed 
+                bubbles.append({'x': col, 'y': 0.0, 'speed': velocity})
                 
-        # 4. Pop bubbles that reach the top
-        bubbles = [b for b in bubbles if b['y'] < 24.5]
-        
-        # 5. Render the frame
-        frame_colors = [(0, 0, 0)] * 100
-        
-        for b in bubbles:
-            px_idx = get_pixel(int(b['x']), int(b['y']))
-            if 0 <= px_idx < 100:
-                if palette == "Classic Gold":
-                    c = (255, 170, 40)
-                elif palette == "Deep Ocean":
-                    c = (0, 150, 255)
-                elif palette == "White Frost":
-                    c = (255, 255, 255)
-                else: # Random Synthwave
-                    c = random.choice([(255, 0, 100), (0, 255, 200), (150, 0, 255)])
+            for b in bubbles:
+                b['y'] += b['speed'] 
+                if random.randint(1, 100) > 90:
+                    direction = random.choice([-1, 1])
+                    b['x'] = max(0, min(3, b['x'] + direction))
                     
-                frame_colors[px_idx] = c
-                
-        await set_led_multiple(list(range(100)), frame_colors)
-        await asyncio.sleep(0.04)
+            bubbles = [b for b in bubbles if b['y'] < 24.5]
+            frame_colors = [(0, 0, 0)] * 100
+            
+            for b in bubbles:
+                px_idx = get_pixel(int(b['x']), int(b['y']))
+                if 0 <= px_idx < 100:
+                    if palette == "Classic Gold": c = (255, 170, 40)
+                    elif palette == "Deep Ocean": c = (0, 150, 255)
+                    elif palette == "White Frost": c = (255, 255, 255)
+                    else: c = random.choice([(255, 0, 100), (0, 255, 200), (150, 0, 255)])
+                    frame_colors[px_idx] = c
+                    
+            await set_led_multiple(list(range(100)), frame_colors)
+            await asyncio.sleep(0.04)
+    except asyncio.CancelledError:
+        pass
 
 champagne.title = "Champagne"
 champagne.attr_int_spawn_rate = 4
 champagne.attr_step_speed = 5
 champagne.attr_list_color_palette = ["Classic Gold", "Deep Ocean", "White Frost", "Synthwave"]
 
+@Anim
 async def sunrise(set_led, set_led_multiple, main_color, speed):
-    """Simulates a massive, solid red-orange sunrise with sharp edge fading."""
+    """Sunrise"""
     start_time = time.time()
-    
-    # --- COLOR GRADIENTS ---
-    SKY_STOPS = [
-        (0.00, (0, 0, 0)),
-        (0.20, (5, 0, 15)),
-        (0.50, (30, 10, 50)),
-        (0.80, (80, 50, 120)),
-        (1.00, (120, 180, 255))
-    ]
-    
-    # Sun goes from black -> deep red -> fiery red-orange
-    SUN_STOPS = [
-        (0.00, (0, 0, 0)),
-        (0.15, (150, 0, 0)),
-        (0.40, (255, 10, 0)),     
-        (0.70, (255, 35, 0)),     
-        (0.90, (255, 65, 0)),     
-        (1.00, (255, 90, 0))      # Fiery, red-heavy orange peak
-    ]
+    SKY_STOPS = [(0.00, (0,0,0)), (0.20, (5,0,15)), (0.50, (30,10,50)), (0.80, (80,50,120)), (1.00, (120,180,255))]
+    SUN_STOPS = [(0.00, (0,0,0)), (0.15, (150,0,0)), (0.40, (255,10,0)), (0.70, (255,35,0)), (0.90, (255,65,0)), (1.00, (255,90,0))]
     
     def get_color(stops, p):
         p = max(0.0, min(1.0, p))
@@ -644,14 +562,8 @@ async def sunrise(set_led, set_led_multiple, main_color, speed):
             elapsed = time.time() - start_time
             progress = min(1.0, elapsed / duration_sec)
             
-            # 2. Sun Physics (NEW SOLID CORE MATH)
-            sun_y = progress * 12.0 # Rises to exact center
-            
-            # The sun's 100% solid core expands to 10.5 rows above and below center
-            # This covers roughly 21 of the 25 rows (84% of the tower)
+            sun_y = progress * 12.0 
             core_radius = progress * 10.5 
-            
-            # The fade only happens over the remaining 2 rows on either end
             fade_distance = 2.0 
             
             sky_c = get_color(SKY_STOPS, progress)
@@ -662,13 +574,8 @@ async def sunrise(set_led, set_led_multiple, main_color, speed):
             if tower_heights:
                 for f in range(25):
                     dist = abs(f - sun_y)
-                    
-                    # If this floor is inside the core, it is 100% sun. 
-                    if dist <= core_radius:
-                        intensity = 1.0
-                    # If it's outside the core, rapidly fade it into the sky over 2 rows.
-                    else:
-                        intensity = max(0.0, 1.0 - ((dist - core_radius) / fade_distance))
+                    if dist <= core_radius: intensity = 1.0
+                    else: intensity = max(0.0, 1.0 - ((dist - core_radius) / fade_distance))
                     
                     r = int((sun_c[0] * intensity) + (sky_c[0] * (1.0 - intensity)))
                     g = int((sun_c[1] * intensity) + (sky_c[1] * (1.0 - intensity)))
@@ -684,15 +591,12 @@ async def sunrise(set_led, set_led_multiple, main_color, speed):
                         
             await set_led_multiple(all_ids, frame)
             
-            if progress >= 1.0:
-                await asyncio.sleep(1.0)
-            else:
-                await asyncio.sleep(0.05)
+            if progress >= 1.0: await asyncio.sleep(1.0)
+            else: await asyncio.sleep(0.05)
                 
     except asyncio.CancelledError:
         pass
 
-# --- Menu Attributes ---
 sunrise.title = "Sunrise Alarm"
 sunrise.attr_int_duration_mins = 15
 sunrise.attr_bool_fast_test_mode = True

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Rainbow Stand Fallback Control</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #ffffff;
+            --primary: #3a86ff;
+            --primary-active: #256ce1;
+            --danger: #ff006e;
+            --danger-active: #d9005d;
+            --stop: #555555;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 22px;
+            margin-bottom: 25px;
+            font-weight: 600;
+            letter-spacing: 1px;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .card h2 {
+            font-size: 16px;
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #aaaaaa;
+            text-transform: uppercase;
+        }
+
+        /* Range Slider Styling */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 24px;
+            width: 24px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+            margin-top: -8px;
+        }
+
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 8px;
+            cursor: pointer;
+            background: #333333;
+            border-radius: 4px;
+        }
+
+        /* Button Styling */
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 16px;
+            width: 100%;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            text-transform: uppercase;
+        }
+
+        .btn:active {
+            background-color: var(--primary-active);
+        }
+
+        .btn-stop {
+            background-color: var(--stop);
+        }
+
+        .btn-stop:active {
+            background-color: #333333;
+        }
+
+        .btn-danger {
+            background-color: var(--danger);
+            margin-bottom: 0;
+        }
+
+        .btn-danger:active {
+            background-color: var(--danger-active);
+        }
+
+        .anim-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .anim-grid .btn {
+            margin-bottom: 0;
+        }
+
+        #status-toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #4caf50;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>RAINBOW STATIONARY</h1>
+
+    <!-- Brightness Card -->
+    <div class="card">
+        <h2>Global Brightness</h2>
+        <input type="range" id="brightness" min="0.01" max="1.0" step="0.05" value="0.3"
+            onchange="updateBrightness(this.value)">
+    </div>
+
+    <!-- Animations Card -->
+    <div class="card">
+        <h2>Animations</h2>
+
+        <!-- INJECT_BUTTONS -->
+
+        <button class="btn btn-stop" onclick="playAnim('stop')">Turn Off LEDs</button>
+    </div>
+
+    <!-- Reset Card -->
+    <div class="card">
+        <h2>System</h2>
+        <button class="btn btn-danger" onclick="resetBrain()">Forget Brain & Enter Pairing</button>
+    </div>
+
+    <div id="status-toast">Command Sent</div>
+
+    <script>
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('status-toast');
+            toast.textContent = message;
+            toast.style.background = isError ? '#ff006e' : '#4caf50';
+            toast.style.opacity = '1';
+            setTimeout(() => { toast.style.opacity = '0'; }, 2000);
+        }
+
+        function playAnim(name) {
+            fetch('/api/anim?name=' + name)
+                .then(response => {
+                    if (response.ok) showToast("Playing: " + name);
+                    else showToast("Error playing animation", true);
+                })
+                .catch(err => showToast("Network Error", true));
+        }
+
+        function updateBrightness(val) {
+            fetch('/api/brightness?val=' + val)
+                .then(response => {
+                    if (response.ok) showToast("Brightness Set");
+                    else showToast("Error setting brightness", true);
+                })
+                .catch(err => showToast("Network Error", true));
+        }
+
+        function resetBrain() {
+            if (confirm("Are you sure? This will disconnect the stand from the Control Box and reboot it.")) {
+                fetch('/api/reset')
+                    .then(response => {
+                        if (response.ok) {
+                            showToast("Resetting...");
+                            setTimeout(() => {
+                                alert("Stand is rebooting into pairing mode. You can close this page and reconnect to your normal Wi-Fi.");
+                            }, 1000);
+                        }
+                    })
+                    .catch(err => showToast("Network Error", true));
+            }
+        }
+    </script>
+</body>
+
+</html>

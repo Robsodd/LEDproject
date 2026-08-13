@@ -8,32 +8,23 @@ import network
 import espnow
 import LEDTower1
 
-# --- OTA Configuration (No Passwords Here) ---
-# Update URLs to point to your public GitHub repo or local server
-OTA_URLS = {
-    "LEDTower1.py": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/LEDTower1.py",
-    "main.py": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/main.py" 
-}
-
 # --- 1. Persistent Settings Logic ---
 SETTINGS_FILE = "settings.json"
 DEFAULT_SETTINGS = {
     "brightness": 0.3,
     "mainColor": [255, 255, 255],
     "animation_data": {},
-    "last_anim": "",
-    "wifi_ssid": "",
-    "wifi_pass": ""
+    "last_anim": "" 
 }
 
 def load_settings():
     try:
         with open(SETTINGS_FILE, "r") as f:
             data = json.load(f)
-            # Ensure new keys exist if loading an older settings file
-            for k, v in DEFAULT_SETTINGS.items():
-                if k not in data:
-                    data[k] = v
+            if "animation_data" not in data:
+                data["animation_data"] = {}
+            if "last_anim" not in data:
+                data["last_anim"] = ""
             return data
     except OSError:
         return DEFAULT_SETTINGS.copy()
@@ -49,6 +40,7 @@ user_data = load_settings()
 global_brightness = user_data["brightness"]
 
 # --- 2. Hardware Config ---
+# I2C OLED Setup (SDA=21, SCL=22)
 try:
     import sh1106
     i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=100000)
@@ -99,6 +91,7 @@ class ButtonGroup:
     def is_pressed(self):
         return any(not b.value() for b in self.buttons)
 
+# --- User Explicit Pin Mappings ---
 encoder = RotaryEncoder(25, 26)
 btn_select = ButtonGroup([32, 27])
 btn_bottom = Button(33)
@@ -132,12 +125,8 @@ def get_anim_settings(func):
 # --- 4. Network & ESP-NOW Setup ---
 sta = network.WLAN(network.STA_IF)
 sta.active(True)
-sta.config(channel=1) 
+sta.config(channel=1) # Channel 1 matches the speaker stand fallback AP
 sta.disconnect()
-
-ap_if = network.WLAN(network.AP_IF)
-ap_if.active(False)
-web_server_task = None
 
 e = espnow.ESPNow()
 e.active(True)
@@ -148,85 +137,15 @@ found_mac_bytes = None
 found_mac_str = ""
 
 def broadcast_to_stands(command, payload=None):
+    """Packages the command and fires it wirelessly to all listening stands."""
     msg = json.dumps({"cmd": command, "payload": payload})
     try:
         e.send(broadcast_mac, msg.encode('utf-8'))
     except Exception:
         pass
 
-# --- 5. Async Web Server (Captive Portal) ---
-def url_decode(s):
-    s = s.replace('+', ' ')
-    res = ""
-    i = 0
-    while i < len(s):
-        if s[i] == '%' and i + 2 < len(s):
-            res += chr(int(s[i+1:i+3], 16))
-            i += 3
-        else:
-            res += s[i]
-            i += 1
-    return res
 
-async def web_request_handler(reader, writer):
-    global user_data
-    try:
-        req = await reader.read(1024)
-        req_str = req.decode('utf-8', 'ignore')
-        
-        if "POST" in req_str:
-            body = req_str.split("\r\n\r\n")[-1]
-            data = {}
-            for pair in body.split('&'):
-                if '=' in pair:
-                    k, v = pair.split('=', 1)
-                    data[k] = url_decode(v)
-            
-            if 's' in data:
-                user_data["wifi_ssid"] = data['s']
-                user_data["wifi_pass"] = data.get('p', '')
-                save_settings(user_data)
-                
-                # Immediately beam the credentials to the stands
-                broadcast_to_stands("SAVE_WIFI", {"ssid": user_data["wifi_ssid"], "pass": user_data["wifi_pass"]})
-                
-                res = "HTTP/1.0 200 OK\r\n\r\n<html><body style='font-family:sans-serif; text-align:center; padding:20px;'><h2>Saved!</h2><p>Credentials synced to stands.</p><p>You may now close this page and exit AP mode on the controller.</p></body></html>"
-                writer.write(res.encode())
-                await writer.drain()
-        else:
-            current_ssid = user_data.get("wifi_ssid", "")
-            html = """HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n
-            <html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-            <body style="font-family:sans-serif; padding:20px; max-width:400px; margin:auto;">
-            <h2>WiFi Setup</h2>
-            <form action="/" method="POST">
-            <p><strong>SSID:</strong><br><input type="text" name="s" value="{}" style="width:100%; padding:8px;"></p>
-            <p><strong>Password:</strong><br><input type="password" name="p" style="width:100%; padding:8px;"></p>
-            <input type="submit" value="Save & Sync" style="width:100%; padding:15px; background:#007BFF; color:white; border:none; border-radius:5px; font-size:16px;">
-            </form></body></html>
-            """.format(current_ssid)
-            writer.write(html.encode())
-            await writer.drain()
-    except Exception as e:
-        pass
-    finally:
-        writer.close()
-        await writer.wait_closed()
-
-async def start_ap_mode():
-    global web_server_task
-    ap_if.active(True)
-    ap_if.config(essid="LED_Tower_Setup", authmode=0) # Open network
-    web_server_task = await asyncio.start_server(web_request_handler, "0.0.0.0", 80)
-
-async def stop_ap_mode():
-    global web_server_task
-    if web_server_task:
-        web_server_task.close()
-        await web_server_task.wait_closed()
-    ap_if.active(False)
-
-# --- 6. TIMER BACKGROUND TASK ---
+# --- 5. TIMER BACKGROUND TASK ---
 async def timer_manager():
     global timer_active, global_brightness
     try:
@@ -320,7 +239,7 @@ def trigger_anim(name):
     broadcast_to_stands("PLAY_ANIMATION", payload)
 
 
-# --- 7. Hardware Loop ---
+# --- 6. Hardware Loop ---
 async def hardware_loop():
     global menu_mode, live_menu_idx, edit_attr_key, edit_attr_name, last_encoder_val
     global timer_active, timer_duration_sec, timer_end_time, timer_mode, timer_task_ref
@@ -353,7 +272,7 @@ async def hardware_loop():
                 last_encoder_val = -1 
 
         if not is_screensaver and (current_time - last_interaction_time > screensaver_timeout):
-            if menu_mode not in ["TIMER_SETUP", "PAIRING_SEARCH", "PAIRING_FOUND", "WIFI_SETUP"]:
+            if menu_mode not in ["TIMER_SETUP", "PAIRING_SEARCH", "PAIRING_FOUND"]:
                 is_screensaver = True
                 last_drawn_second = -1 
                 last_drawn_minute = -1 
@@ -392,9 +311,7 @@ async def hardware_loop():
         if menu_mode == "MAIN":
             anim_funcs = [f for f in LEDTower1.__all__ if f != "stop"]
             timer_text = "CANCEL TIMER" if timer_active else "NEW TIMER"
-            
-            # Added "WIFI SETUP" to the menu
-            full_menu_display = [getattr(getattr(LEDTower1, f), 'title', f.replace('_', ' ').upper()) for f in anim_funcs] + [timer_text, "PAIR NEW STAND", "WIFI SETUP", "UPDATE CONTROLLER", "UPDATE STANDS", "SOFT REBOOT"]
+            full_menu_display = [getattr(getattr(LEDTower1, f), 'title', f.replace('_', ' ').upper()) for f in anim_funcs] + [timer_text, "PAIR NEW STAND", "SOFT REBOOT"]
 
             idx = max(0, min(int(encoder.steps), len(full_menu_display) - 1))
             encoder.steps = idx 
@@ -426,11 +343,6 @@ async def hardware_loop():
                     menu_mode = "PAIRING_SEARCH"
                     encoder.steps = 0
                     last_encoder_val = -1
-                elif choice == "WIFI SETUP":
-                    # Start the AP and web server
-                    await start_ap_mode()
-                    menu_mode = "WIFI_SETUP"
-                    last_encoder_val = -1
                 elif choice == "SOFT REBOOT":
                     cancel_timer()
                     broadcast_to_stands("PLAY_ANIMATION", "stop")
@@ -438,49 +350,6 @@ async def hardware_loop():
                     display.text("REBOOTING...", 25, 25, 1)
                     display.show()
                     machine.reset()
-                elif choice == "UPDATE CONTROLLER":
-                    # Fetch credentials from secure local storage
-                    ssid = user_data.get("wifi_ssid", "")
-                    pwd = user_data.get("wifi_pass", "")
-                    
-                    if not ssid:
-                        display.fill(0)
-                        display.text("SETUP WIFI FIRST", 5, 30, 1)
-                        display.show()
-                        time.sleep(2)
-                    else:
-                        display.fill(0)
-                        display.text("UPDATING...", 25, 25, 1)
-                        display.text("Please wait", 25, 40, 1)
-                        display.show()
-                        
-                        e.active(False) 
-                        import ota
-                        
-                        success = ota.fetch_and_update(ssid, pwd, OTA_URLS)
-                        
-                        display.fill(0)
-                        if success:
-                            display.text("UPDATE SUCCESS", 10, 25, 1)
-                            display.text("Rebooting...", 20, 40, 1)
-                        else:
-                            display.text("UPDATE FAILED", 15, 25, 1)
-                        display.show()
-                        time.sleep(2)
-                        machine.reset()
-
-                elif choice == "UPDATE STANDS":
-                    display.fill(0)
-                    display.text("SENDING OTA", 20, 25, 1)
-                    display.text("COMMAND...", 25, 40, 1)
-                    display.show()
-                    
-                    broadcast_to_stands("START_OTA", None)
-                    time.sleep(1.5)
-                    
-                    menu_mode = "MAIN"
-                    encoder.steps = 0
-                    last_encoder_val = -1
                 else:
                     trigger_anim(anim_funcs[idx])
                     menu_mode = "ANIM_MENU"
@@ -490,28 +359,7 @@ async def hardware_loop():
                 while btn_select.is_pressed:
                     await asyncio.sleep(0.1)
 
-        elif menu_mode == "WIFI_SETUP":
-            if last_encoder_val != 1:
-                display.fill(0)
-                display.text("AP: LED_Tower_Setup", 0, 10, 1)
-                display.text("IP: 192.168.4.1", 0, 25, 1)
-                display.text("Connect on phone", 0, 40, 1)
-                display.text("> Press Bottom to exit", 0, 55, 1)
-                display.show()
-                last_encoder_val = 1
-                
-            if btn_bottom.is_pressed:
-                # Shut down the AP and Web Server
-                await stop_ap_mode()
-                menu_mode = "MAIN"
-                last_encoder_val = -1
-                encoder.steps = 0
-                while btn_bottom.is_pressed:
-                    await asyncio.sleep(0.1)
-
-        # --- (PAIRING_SEARCH, PAIRING_FOUND, TIMER_SETUP, TIMER_MODE, TIMER_ALARM_ANIM, TIMER_ALARM_THEME, ANIM_MENU, and LIVE_EDIT modes remain identical to the previous code version, omitted here for brevity but logic is unchanged) ---
         elif menu_mode == "PAIRING_SEARCH":
-            # Logic identically preserved
             display.fill(0)
             display.text("SEARCHING...", 5, 20, 1)
             display.text("Ensure stand is", 5, 35, 1)
@@ -571,7 +419,270 @@ async def hardware_loop():
                 while btn_bottom.is_pressed:
                     await asyncio.sleep(0.1)
 
-        if btn_bottom.is_pressed and menu_mode not in ["WIFI_SETUP"]:
+        elif menu_mode == "TIMER_SETUP":
+            if timer_edit_stage == 0:
+                val = max(0, min(99, int(encoder.steps)))
+                timer_h = val
+            elif timer_edit_stage == 1:
+                val = max(0, min(59, int(encoder.steps)))
+                timer_m = val
+            elif timer_edit_stage == 2:
+                val = max(0, min(59, int(encoder.steps)))
+                timer_s = val
+                
+            encoder.steps = val
+            blink_on = (int(time.time() * 2) % 2 == 0)
+
+            display.fill(0)
+            display.text("SET DURATION", 5, 2, 1)
+            display.hline(0, 15, 128, 1)
+            
+            time_str = ""
+            if timer_edit_stage != 0 or blink_on:
+                time_str += "{:02d}:".format(timer_h)
+            else:
+                time_str += "   :"
+            
+            if timer_edit_stage != 1 or blink_on:
+                time_str += "{:02d}:".format(timer_m)
+            else:
+                time_str += "   :"
+                
+            if timer_edit_stage != 2 or blink_on:
+                time_str += "{:02d}".format(timer_s)
+            else:
+                time_str += "  "
+            
+            display.text(time_str, 35, 30, 1)
+            labels = ["HOURS", "MINUTES", "SECONDS"]
+            display.text(labels[timer_edit_stage], 40, 50, 1)
+            display.show()
+                
+            last_encoder_val = val
+            
+            if btn_select.is_pressed:
+                if timer_edit_stage < 2:
+                    timer_edit_stage += 1
+                    if timer_edit_stage == 1:
+                        encoder.steps = timer_m
+                    if timer_edit_stage == 2:
+                        encoder.steps = timer_s
+                else:
+                    timer_duration_sec = (timer_h * 3600) + (timer_m * 60) + timer_s
+                    if timer_duration_sec > 0:
+                        menu_mode = "TIMER_MODE"
+                    else:
+                        menu_mode = "MAIN"
+                    encoder.steps = 0
+                    
+                last_encoder_val = -1
+                while btn_select.is_pressed:
+                    await asyncio.sleep(0.1)
+
+        elif menu_mode == "TIMER_MODE":
+            idx = max(0, min(2, int(encoder.steps)))
+            encoder.steps = idx
+            
+            if idx != last_encoder_val:
+                display.fill(0)
+                display.text("TIMER ACTION", 5, 2, 1)
+                display.hline(0, 15, 128, 1)
+                for i in range(-1, 2):
+                    curr = idx + i
+                    if 0 <= curr < len(TIMER_MODES):
+                        prefix = "> " if i == 0 else "  "
+                        display.text("{}{}".format(prefix, TIMER_MODES[curr]), 10, 25 + (i * 12), 1)
+                display.show()
+                last_encoder_val = idx
+                
+            if btn_select.is_pressed:
+                timer_mode = TIMER_MODES[idx]
+                if timer_mode == "ALARM":
+                    menu_mode = "TIMER_ALARM_ANIM"
+                    encoder.steps = 0
+                else:
+                    start_the_timer()
+                    menu_mode = "MAIN"
+                    encoder.steps = 0
+                
+                last_encoder_val = -1
+                while btn_select.is_pressed:
+                    await asyncio.sleep(0.1)
+
+        elif menu_mode == "TIMER_ALARM_ANIM":
+            anims = [f for f in LEDTower1.__all__ if f not in ['stop', 'plain_white']]
+            idx = max(0, min(len(anims)-1, int(encoder.steps)))
+            encoder.steps = idx
+            
+            if idx != last_encoder_val:
+                display.fill(0)
+                display.text("WAKE WITH?", 5, 2, 1)
+                display.hline(0, 15, 128, 1)
+                display.text("> {}".format(getattr(getattr(LEDTower1, anims[idx]), 'title', anims[idx].replace('_', ' ').upper())), 10, 30, 1)
+                display.show()
+                last_encoder_val = idx
+                
+            if btn_select.is_pressed:
+                alarm_anim_target = anims[idx]
+                func = getattr(LEDTower1, alarm_anim_target)
+                
+                t_key = next((k for k in ['attr_list_theme', 'attr_list_color_palette', 'attr_list_color_theme'] if hasattr(func, k)), None)
+                if t_key:
+                    menu_mode = "TIMER_ALARM_THEME"
+                    encoder.steps = 0
+                else:
+                    alarm_theme_target = ""
+                    start_the_timer()
+                    menu_mode = "MAIN"
+                    
+                last_encoder_val = -1
+                while btn_select.is_pressed:
+                    await asyncio.sleep(0.1)
+
+        elif menu_mode == "TIMER_ALARM_THEME":
+            func = getattr(LEDTower1, alarm_anim_target)
+            t_key = next(k for k in ['attr_list_theme', 'attr_list_color_palette', 'attr_list_color_theme'] if hasattr(func, k))
+            themes = getattr(func, t_key)
+            
+            idx = max(0, min(len(themes)-1, int(encoder.steps)))
+            encoder.steps = idx
+            
+            if idx != last_encoder_val:
+                display.fill(0)
+                display.text("SELECT THEME", 5, 2, 1)
+                display.hline(0, 15, 128, 1)
+                display.text("> {}".format(themes[idx]), 10, 30, 1)
+                display.show()
+                last_encoder_val = idx
+                
+            if btn_select.is_pressed:
+                alarm_theme_target = themes[idx]
+                start_the_timer()
+                menu_mode = "MAIN"
+                last_encoder_val = -1
+                while btn_select.is_pressed:
+                    await asyncio.sleep(0.1)
+
+        elif menu_mode == "ANIM_MENU":
+            func = getattr(LEDTower1, current_anim_name)
+            attr_keys, display_options = get_anim_settings(func)
+            idx = max(0, min(int(encoder.steps), len(display_options) - 1))
+            encoder.steps = idx
+
+            if idx != last_encoder_val:
+                display.fill(0)
+                display.text(selected_anim_title[:16], 5, 2, 1)
+                display.hline(0, 15, 128, 1)
+                for i in range(-1, 2):
+                    curr = idx + i
+                    if 0 <= curr < len(display_options):
+                        prefix = "> " if i == 0 else "  "
+                        display.text("{}{}".format(prefix, display_options[curr]), 10, 25 + (i * 12), 1)
+                display.show()
+                last_encoder_val = idx
+
+            if btn_select.is_pressed:
+                choice = display_options[idx]
+                if choice == "Back to List":
+                    menu_mode = "MAIN"
+                    encoder.steps = 0
+                    last_encoder_val = -1
+                elif choice == "Global Brightness":
+                    menu_mode = "LIVE_EDIT"
+                    edit_attr_key = "GLOBAL_BRIGHT"
+                    edit_attr_name = choice
+                    encoder.steps = int(user_data["brightness"] * 10)
+                else:
+                    edit_attr_key = attr_keys[idx]
+                    edit_attr_name = choice
+                    menu_mode = "LIVE_EDIT"
+                    val = getattr(func, edit_attr_key)
+                    if isinstance(val, list):
+                        current_choice = getattr(func, edit_attr_key + "_choice", val[0])
+                        try:
+                            encoder.steps = val.index(current_choice)
+                        except Exception:
+                            encoder.steps = 0
+                    else:
+                        encoder.steps = 1 if isinstance(val, bool) and val else (0 if isinstance(val, bool) else int(val))
+                
+                last_encoder_val = -1 
+                while btn_select.is_pressed:
+                    await asyncio.sleep(0.1)
+
+        elif menu_mode == "LIVE_EDIT":
+            is_bool = "bool" in edit_attr_key
+            is_step_type = "step" in edit_attr_key or edit_attr_key == "GLOBAL_BRIGHT"
+            is_list = "list" in edit_attr_key
+            
+            if is_list:
+                options = getattr(getattr(LEDTower1, current_anim_name), edit_attr_key)
+                idx = max(0, min(int(encoder.steps), len(options) - 1))
+                encoder.steps = idx
+                val = options[idx]
+            elif is_bool:
+                val = (int(encoder.steps) % 2 != 0)
+            elif is_step_type:
+                val = max(1, min(10, int(encoder.steps)))
+                encoder.steps = val
+            else:
+                val = max(1, min(100, int(encoder.steps)))
+                encoder.steps = val
+
+            if val != last_encoder_val:
+                display.fill(0)
+                display.text("EDIT: {}".format(edit_attr_name[:10]), 5, 2, 1)
+                display.hline(0, 15, 128, 1)
+
+                if is_list:
+                    for i in range(-1, 2):
+                        curr_opt_idx = idx + i
+                        if 0 <= curr_opt_idx < len(options):
+                            prefix = "> " if i == 0 else "  "
+                            display.text("{}{}".format(prefix, options[curr_opt_idx]), 10, 25 + (i * 12), 1)
+                elif is_bool:
+                    status = "ON" if val else "OFF"
+                    display.rect(30, 25, 60, 20, 1)
+                    if val:
+                        display.fill_rect(32, 27, 56, 16, 1)
+                        display.text(status, 50, 31, 0)
+                    else:
+                        display.text(status, 50, 31, 1)
+                else:
+                    bar_w = val * 10 if is_step_type else val
+                    display.rect(10, 25, 100, 10, 1)
+                    display.fill_rect(10, 25, bar_w, 10, 1)
+                    display.text("Value: {}".format(val), 10, 45, 1)
+                
+                display.show()
+                last_encoder_val = val
+                
+                if edit_attr_key == "GLOBAL_BRIGHT":
+                    user_data["brightness"] = val / 10.0
+                    global_brightness = user_data["brightness"]
+                    broadcast_to_stands("SET_BRIGHTNESS", global_brightness)
+                elif is_list:
+                    setattr(getattr(LEDTower1, current_anim_name), edit_attr_key + "_choice", val)
+                else:
+                    setattr(getattr(LEDTower1, current_anim_name), edit_attr_key, val)
+
+            if btn_select.is_pressed:
+                if current_anim_name not in user_data["animation_data"]:
+                    user_data["animation_data"][current_anim_name] = {}
+                if edit_attr_key != "GLOBAL_BRIGHT":
+                    user_data["animation_data"][current_anim_name][edit_attr_key] = val
+                    
+                save_settings(user_data)
+                
+                payload = {"attr": edit_attr_key, "value": val}
+                broadcast_to_stands("UPDATE_ATTRIBUTE", payload)
+                
+                menu_mode = "ANIM_MENU"
+                last_encoder_val = -1
+                while btn_select.is_pressed:
+                    await asyncio.sleep(0.1)
+
+        if btn_bottom.is_pressed:
             if timer_active and timer_mode != "ALARM":
                 cancel_timer()
                 
