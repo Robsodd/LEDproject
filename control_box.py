@@ -8,23 +8,29 @@ import network
 import espnow
 import LEDTower1
 
+# --- OTA Configuration (No Passwords Here) ---
+MANIFEST_URL = "https://raw.githubusercontent.com/Robsodd/LEDproject/main/manifest.json"
+
 # --- 1. Persistent Settings Logic ---
 SETTINGS_FILE = "settings.json"
 DEFAULT_SETTINGS = {
     "brightness": 0.3,
     "mainColor": [255, 255, 255],
     "animation_data": {},
-    "last_anim": "" 
+    "last_anim": "",
+    "wifi_ssid": "",
+    "wifi_pass": "",
+    "screen_flipped": False
 }
 
 def load_settings():
     try:
         with open(SETTINGS_FILE, "r") as f:
             data = json.load(f)
-            if "animation_data" not in data:
-                data["animation_data"] = {}
-            if "last_anim" not in data:
-                data["last_anim"] = ""
+            # Ensure new keys exist if loading an older settings file
+            for k, v in DEFAULT_SETTINGS.items():
+                if k not in data:
+                    data[k] = v
             return data
     except OSError:
         return DEFAULT_SETTINGS.copy()
@@ -40,11 +46,28 @@ user_data = load_settings()
 global_brightness = user_data["brightness"]
 
 # --- 2. Hardware Config ---
-# I2C OLED Setup (SDA=21, SCL=22)
 try:
     import sh1106
     i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=100000)
     display = sh1106.SH1106_I2C(128, 64, i2c)
+    
+    # Bulletproof screen flip function
+    def apply_screen_flip(is_flipped):
+        try:
+            if hasattr(display, 'flip'):
+                display.flip(is_flipped)
+            elif hasattr(display, 'rotate'):
+                display.rotate(1 if is_flipped else 0)
+            else:
+                # Raw hardware register commands for SH1106/SSD1306
+                display.write_cmd(0xA1 if is_flipped else 0xA0) # Segment remap
+                display.write_cmd(0xC8 if is_flipped else 0xC0) # COM Output Scan Direction
+        except Exception as e:
+            print("Could not flip screen:", e)
+            
+    # Apply the saved rotation state on boot
+    apply_screen_flip(user_data.get("screen_flipped", False))
+    
 except Exception as e:
     print("OLED Error:", e)
     sys.exit(1)
@@ -91,7 +114,6 @@ class ButtonGroup:
     def is_pressed(self):
         return any(not b.value() for b in self.buttons)
 
-# --- User Explicit Pin Mappings ---
 encoder = RotaryEncoder(25, 26)
 btn_select = ButtonGroup([32, 27])
 btn_bottom = Button(33)
@@ -125,8 +147,12 @@ def get_anim_settings(func):
 # --- 4. Network & ESP-NOW Setup ---
 sta = network.WLAN(network.STA_IF)
 sta.active(True)
-sta.config(channel=1) # Channel 1 matches the speaker stand fallback AP
+sta.config(channel=1) 
 sta.disconnect()
+
+ap_if = network.WLAN(network.AP_IF)
+ap_if.active(False)
+web_server_task = None
 
 e = espnow.ESPNow()
 e.active(True)
@@ -137,15 +163,84 @@ found_mac_bytes = None
 found_mac_str = ""
 
 def broadcast_to_stands(command, payload=None):
-    """Packages the command and fires it wirelessly to all listening stands."""
     msg = json.dumps({"cmd": command, "payload": payload})
     try:
         e.send(broadcast_mac, msg.encode('utf-8'))
     except Exception:
         pass
 
+# --- 5. Async Web Server (Captive Portal) ---
+def url_decode(s):
+    s = s.replace('+', ' ')
+    res = ""
+    i = 0
+    while i < len(s):
+        if s[i] == '%' and i + 2 < len(s):
+            res += chr(int(s[i+1:i+3], 16))
+            i += 3
+        else:
+            res += s[i]
+            i += 1
+    return res
 
-# --- 5. TIMER BACKGROUND TASK ---
+async def web_request_handler(reader, writer):
+    global user_data
+    try:
+        req = await reader.read(1024)
+        req_str = req.decode('utf-8', 'ignore')
+        
+        if "POST" in req_str:
+            body = req_str.split("\r\n\r\n")[-1]
+            data = {}
+            for pair in body.split('&'):
+                if '=' in pair:
+                    k, v = pair.split('=', 1)
+                    data[k] = url_decode(v)
+            
+            if 's' in data:
+                user_data["wifi_ssid"] = data['s']
+                user_data["wifi_pass"] = data.get('p', '')
+                save_settings(user_data)
+                
+                broadcast_to_stands("SAVE_WIFI", {"ssid": user_data["wifi_ssid"], "pass": user_data["wifi_pass"]})
+                
+                res = "HTTP/1.0 200 OK\r\n\r\n<html><body style='font-family:sans-serif; text-align:center; padding:20px;'><h2>Saved!</h2><p>Credentials synced to stands.</p><p>You may now close this page and exit AP mode on the controller.</p></body></html>"
+                writer.write(res.encode())
+                await writer.drain()
+        else:
+            current_ssid = user_data.get("wifi_ssid", "")
+            html = """HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n
+            <html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="font-family:sans-serif; padding:20px; max-width:400px; margin:auto;">
+            <h2>WiFi Setup</h2>
+            <form action="/" method="POST">
+            <p><strong>SSID:</strong><br><input type="text" name="s" value="{}" style="width:100%; padding:8px;"></p>
+            <p><strong>Password:</strong><br><input type="password" name="p" style="width:100%; padding:8px;"></p>
+            <input type="submit" value="Save & Sync" style="width:100%; padding:15px; background:#007BFF; color:white; border:none; border-radius:5px; font-size:16px;">
+            </form></body></html>
+            """.format(current_ssid)
+            writer.write(html.encode())
+            await writer.drain()
+    except Exception:
+        pass
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+async def start_ap_mode():
+    global web_server_task
+    ap_if.active(True)
+    ap_if.config(essid="LED_Tower_Setup", authmode=0)
+    web_server_task = await asyncio.start_server(web_request_handler, "0.0.0.0", 80)
+
+async def stop_ap_mode():
+    global web_server_task
+    if web_server_task:
+        web_server_task.close()
+        await web_server_task.wait_closed()
+    ap_if.active(False)
+
+# --- 6. TIMER BACKGROUND TASK ---
 async def timer_manager():
     global timer_active, global_brightness
     try:
@@ -239,7 +334,7 @@ def trigger_anim(name):
     broadcast_to_stands("PLAY_ANIMATION", payload)
 
 
-# --- 6. Hardware Loop ---
+# --- 7. Hardware Loop ---
 async def hardware_loop():
     global menu_mode, live_menu_idx, edit_attr_key, edit_attr_name, last_encoder_val
     global timer_active, timer_duration_sec, timer_end_time, timer_mode, timer_task_ref
@@ -257,6 +352,27 @@ async def hardware_loop():
         current_time = time.time()
         current_steps = int(encoder.steps)
 
+        # --- GLOBAL ESP-NOW LISTENER ---
+        host, msg = e.recv(0)
+        if msg:
+            try:
+                data = json.loads(msg.decode('utf-8'))
+                cmd = data.get("cmd")
+                
+                if cmd == "PAIR_ME" and menu_mode == "PAIRING_SEARCH":
+                    found_mac_str = data.get("mac")
+                    found_mac_bytes = host
+                    menu_mode = "PAIRING_FOUND"
+                    last_encoder_val = -1
+                    
+                elif cmd == "REQUEST_WIFI":
+                    stored_ssid = user_data.get("wifi_ssid", "")
+                    stored_pwd = user_data.get("wifi_pass", "")
+                    if stored_ssid:
+                        broadcast_to_stands("SAVE_WIFI", {"ssid": stored_ssid, "pass": stored_pwd})
+            except Exception:
+                pass
+
         activity_detected = False
         if current_steps != last_encoder_steps:
             activity_detected = True
@@ -272,7 +388,7 @@ async def hardware_loop():
                 last_encoder_val = -1 
 
         if not is_screensaver and (current_time - last_interaction_time > screensaver_timeout):
-            if menu_mode not in ["TIMER_SETUP", "PAIRING_SEARCH", "PAIRING_FOUND"]:
+            if menu_mode not in ["TIMER_SETUP", "PAIRING_SEARCH", "PAIRING_FOUND", "WIFI_SETUP"]:
                 is_screensaver = True
                 last_drawn_second = -1 
                 last_drawn_minute = -1 
@@ -311,7 +427,8 @@ async def hardware_loop():
         if menu_mode == "MAIN":
             anim_funcs = [f for f in LEDTower1.__all__ if f != "stop"]
             timer_text = "CANCEL TIMER" if timer_active else "NEW TIMER"
-            full_menu_display = [getattr(getattr(LEDTower1, f), 'title', f.replace('_', ' ').upper()) for f in anim_funcs] + [timer_text, "PAIR NEW STAND", "SOFT REBOOT"]
+            
+            full_menu_display = [getattr(getattr(LEDTower1, f), 'title', f.replace('_', ' ').upper()) for f in anim_funcs] + [timer_text, "PAIR NEW STAND", "WIFI SETUP", "FLIP SCREEN", "UPDATE CONTROLLER", "UPDATE STANDS", "SOFT REBOOT"]
 
             idx = max(0, min(int(encoder.steps), len(full_menu_display) - 1))
             encoder.steps = idx 
@@ -343,6 +460,20 @@ async def hardware_loop():
                     menu_mode = "PAIRING_SEARCH"
                     encoder.steps = 0
                     last_encoder_val = -1
+                elif choice == "WIFI SETUP":
+                    await start_ap_mode()
+                    menu_mode = "WIFI_SETUP"
+                    last_encoder_val = -1
+                elif choice == "FLIP SCREEN":
+                    user_data["screen_flipped"] = not user_data.get("screen_flipped", False)
+                    save_settings(user_data)
+                    apply_screen_flip(user_data["screen_flipped"])
+                    
+                    display.fill(0)
+                    display.text("SCREEN FLIPPED", 10, 30, 1)
+                    display.show()
+                    time.sleep(1)
+                    last_encoder_val = -1
                 elif choice == "SOFT REBOOT":
                     cancel_timer()
                     broadcast_to_stands("PLAY_ANIMATION", "stop")
@@ -350,6 +481,48 @@ async def hardware_loop():
                     display.text("REBOOTING...", 25, 25, 1)
                     display.show()
                     machine.reset()
+                elif choice == "UPDATE CONTROLLER":
+                    ssid = user_data.get("wifi_ssid", "")
+                    pwd = user_data.get("wifi_pass", "")
+                    
+                    if not ssid:
+                        display.fill(0)
+                        display.text("SETUP WIFI FIRST", 5, 30, 1)
+                        display.show()
+                        time.sleep(2)
+                    else:
+                        display.fill(0)
+                        display.text("UPDATING...", 25, 25, 1)
+                        display.text("Please wait", 25, 40, 1)
+                        display.show()
+                        
+                        e.active(False) 
+                        import ota
+                        
+                        success = ota.fetch_and_update(ssid, pwd, MANIFEST_URL, caller="control_box")
+                        
+                        display.fill(0)
+                        if success:
+                            display.text("UPDATE SUCCESS", 10, 25, 1)
+                            display.text("Rebooting...", 20, 40, 1)
+                        else:
+                            display.text("UPDATE FAILED", 15, 25, 1)
+                        display.show()
+                        time.sleep(2)
+                        machine.reset()
+
+                elif choice == "UPDATE STANDS":
+                    display.fill(0)
+                    display.text("SENDING OTA", 20, 25, 1)
+                    display.text("COMMAND...", 25, 40, 1)
+                    display.show()
+                    
+                    broadcast_to_stands("START_OTA", None)
+                    time.sleep(1.5)
+                    
+                    menu_mode = "MAIN"
+                    encoder.steps = 0
+                    last_encoder_val = -1
                 else:
                     trigger_anim(anim_funcs[idx])
                     menu_mode = "ANIM_MENU"
@@ -359,24 +532,30 @@ async def hardware_loop():
                 while btn_select.is_pressed:
                     await asyncio.sleep(0.1)
 
+        elif menu_mode == "WIFI_SETUP":
+            if last_encoder_val != 1:
+                display.fill(0)
+                display.text("AP: LED_Tower_Setup", 0, 10, 1)
+                display.text("IP: 192.168.4.1", 0, 25, 1)
+                display.text("Connect on phone", 0, 40, 1)
+                display.text("> Press Bottom to exit", 0, 55, 1)
+                display.show()
+                last_encoder_val = 1
+                
+            if btn_bottom.is_pressed:
+                await stop_ap_mode()
+                menu_mode = "MAIN"
+                last_encoder_val = -1
+                encoder.steps = 0
+                while btn_bottom.is_pressed:
+                    await asyncio.sleep(0.1)
+
         elif menu_mode == "PAIRING_SEARCH":
             display.fill(0)
             display.text("SEARCHING...", 5, 20, 1)
             display.text("Ensure stand is", 5, 35, 1)
             display.text("in pairing mode", 5, 45, 1)
             display.show()
-            
-            host, msg = e.recv(0)
-            if msg:
-                try:
-                    data = json.loads(msg.decode('utf-8'))
-                    if data.get("cmd") == "PAIR_ME":
-                        found_mac_str = data.get("mac")
-                        found_mac_bytes = host
-                        menu_mode = "PAIRING_FOUND"
-                        last_encoder_val = -1
-                except Exception:
-                    pass
                     
             if btn_bottom.is_pressed:
                 menu_mode = "MAIN"
@@ -682,7 +861,7 @@ async def hardware_loop():
                 while btn_select.is_pressed:
                     await asyncio.sleep(0.1)
 
-        if btn_bottom.is_pressed:
+        if btn_bottom.is_pressed and menu_mode not in ["WIFI_SETUP"]:
             if timer_active and timer_mode != "ALARM":
                 cancel_timer()
                 
