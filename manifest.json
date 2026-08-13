@@ -1,0 +1,12 @@
+{
+  "files": {
+    "main.py": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/main.py",
+    "control_box.py": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/control_box.py",
+    "speaker_stand.py": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/speaker_stand.py",
+    "LEDTower1.py": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/LEDTower1.py",
+    "ota.py": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/ota.py",
+    "index.html": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/index.html",
+    "lib/colorsys.py": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/lib/colorsys.py",
+    "lib/sh1106.py": "https://raw.githubusercontent.com/Robsodd/LEDproject/main/lib/sh1106.py"
+  }
+}
