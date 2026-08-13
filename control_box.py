@@ -144,6 +144,57 @@ def get_anim_settings(func):
     display_opts = [k.replace('attr_', '').replace('list_', '').replace('bool_', '').replace('step_', '').replace('int_', '').replace('_', ' ').upper() for k in keys]
     return keys, display_opts + ["Global Brightness", "Back to List"]
 
+def sync_time_uk():
+    ssid = user_data.get("wifi_ssid", "")
+    pwd = user_data.get("wifi_pass", "")
+    
+    if not ssid:
+        return # Can't sync without Wi-Fi setup
+        
+    print("Syncing time via NTP...")
+    sta.active(True)
+    sta.connect(ssid, pwd)
+    
+    timeout = 10
+    while not sta.isconnected() and timeout > 0:
+        time.sleep(1)
+        timeout -= 1
+        
+    if sta.isconnected():
+        try:
+            import ntptime
+            ntptime.settime() # Pulls atomic time and sets ESP32 to UTC
+            
+            # UK Daylight Savings (BST) Calculation
+            year, month, mday, hour, min, sec, weekday, yearday = time.localtime()
+            
+            is_dst = False
+            if 4 <= month <= 9:
+                is_dst = True
+            elif month == 3:
+                # BST starts last Sunday in March
+                last_sunday = 31 - (time.localtime(time.mktime((year, 3, 31, 0, 0, 0, 0, 0)))[6] + 1) % 7
+                if mday >= last_sunday: is_dst = True
+            elif month == 10:
+                # BST ends last Sunday in October
+                last_sunday = 31 - (time.localtime(time.mktime((year, 10, 31, 0, 0, 0, 0, 0)))[6] + 1) % 7
+                if mday < last_sunday: is_dst = True
+                
+            if is_dst:
+                # If we are in BST, shift the hardware clock forward by 1 hour (3600 sec)
+                tm = time.localtime(time.time() + 3600)
+                # RTC requires: (year, month, day, weekday, hours, minutes, seconds, subseconds)
+                machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6], tm[3], tm[4], tm[5], 0))
+                
+            print("UK Time synced successfully!")
+        except Exception as e:
+            print("NTP sync failed:", e)
+            
+    # Disconnect so Wi-Fi doesn't interfere with ESP-NOW
+    sta.disconnect()
+    sta.active(False)
+
+
 # --- 4. Network & ESP-NOW Setup ---
 sta = network.WLAN(network.STA_IF)
 sta.active(True)
@@ -184,7 +235,7 @@ def url_decode(s):
     return res
 
 async def web_request_handler(reader, writer):
-    global user_data
+    global user_data, menu_mode, last_encoder_val
     try:
         req = await reader.read(1024)
         req_str = req.decode('utf-8', 'ignore')
@@ -207,6 +258,12 @@ async def web_request_handler(reader, writer):
                 res = "HTTP/1.0 200 OK\r\n\r\n<html><body style='font-family:sans-serif; text-align:center; padding:20px;'><h2>Saved!</h2><p>Credentials synced to stands.</p><p>You may now close this page and exit AP mode on the controller.</p></body></html>"
                 writer.write(res.encode())
                 await writer.drain()
+                sync_time_uk()
+
+                menu_mode = "MAIN"
+                last_encoder_val = -1
+                # Schedule the AP to shut down in the background
+                asyncio.create_task(stop_ap_mode())
         else:
             current_ssid = user_data.get("wifi_ssid", "")
             html = """HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n
@@ -237,7 +294,7 @@ async def stop_ap_mode():
     global web_server_task
     if web_server_task:
         web_server_task.close()
-        await web_server_task.wait_closed()
+        #await web_server_task.wait_closed()
     ap_if.active(False)
 
 # --- 6. TIMER BACKGROUND TASK ---
@@ -483,8 +540,6 @@ async def hardware_loop():
                     machine.reset()
                 elif choice == "UPDATE CONTROLLER":
                     ssid = user_data.get("wifi_ssid", "")
-                    pwd = user_data.get("wifi_pass", "")
-                    
                     if not ssid:
                         display.fill(0)
                         display.text("SETUP WIFI FIRST", 5, 30, 1)
@@ -492,23 +547,14 @@ async def hardware_loop():
                         time.sleep(2)
                     else:
                         display.fill(0)
-                        display.text("UPDATING...", 25, 25, 1)
-                        display.text("Please wait", 25, 40, 1)
+                        display.text("PREPARING OTA", 15, 25, 1)
+                        display.text("Rebooting...", 20, 40, 1)
                         display.show()
                         
-                        e.active(False) 
-                        import ota
-                        
-                        success = ota.fetch_and_update(ssid, pwd, MANIFEST_URL, caller="control_box")
-                        
-                        display.fill(0)
-                        if success:
-                            display.text("UPDATE SUCCESS", 10, 25, 1)
-                            display.text("Rebooting...", 20, 40, 1)
-                        else:
-                            display.text("UPDATE FAILED", 15, 25, 1)
-                        display.show()
-                        time.sleep(2)
+                        # Set the flag and reboot into Safe Mode
+                        with open("ota_pending.txt", "w") as f:
+                            f.write("1")
+                        time.sleep(1)
                         machine.reset()
 
                 elif choice == "UPDATE STANDS":
@@ -543,7 +589,7 @@ async def hardware_loop():
                 last_encoder_val = 1
                 
             if btn_bottom.is_pressed:
-                await stop_ap_mode()
+                asyncio.create_task(stop_ap_mode())
                 menu_mode = "MAIN"
                 last_encoder_val = -1
                 encoder.steps = 0
@@ -551,17 +597,21 @@ async def hardware_loop():
                     await asyncio.sleep(0.1)
 
         elif menu_mode == "PAIRING_SEARCH":
-            display.fill(0)
-            display.text("SEARCHING...", 5, 20, 1)
-            display.text("Ensure stand is", 5, 35, 1)
-            display.text("in pairing mode", 5, 45, 1)
-            display.show()
+            if last_encoder_val != 2:
+                display.fill(0)
+                display.text("SEARCHING...", 5, 10, 1)
+                display.text("Ensure stand is", 5, 25, 1)
+                display.text("in pairing mode", 5, 35, 1)
+                display.text("> Press to exit", 5, 55, 1)
+                display.show()
+                last_encoder_val = 2
                     
-            if btn_bottom.is_pressed:
+            # NEW: Listen for BOTH the encoder click and the bottom button
+            if btn_bottom.is_pressed or btn_select.is_pressed:
                 menu_mode = "MAIN"
                 last_encoder_val = -1
                 encoder.steps = 0
-                while btn_bottom.is_pressed:
+                while btn_bottom.is_pressed or btn_select.is_pressed:
                     await asyncio.sleep(0.1)
 
         elif menu_mode == "PAIRING_FOUND":
@@ -877,11 +927,18 @@ async def hardware_loop():
         await asyncio.sleep(0.05)
 
 async def run_control_box():
+    # --- NEW: Sync time on boot ---
+    display.fill(0)
+    display.text("SYNCING CLOCK...", 5, 30, 1)
+    display.show()
+    #sync_time_uk()
+    
     saved_anim = user_data.get("last_anim", "")
     if saved_anim and hasattr(LEDTower1, saved_anim):
         trigger_anim(saved_anim)
     elif LEDTower1.__all__:
         trigger_anim(LEDTower1.__all__[0])
+        
     await hardware_loop()
 
 def start():

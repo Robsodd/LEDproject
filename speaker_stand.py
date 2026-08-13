@@ -224,60 +224,6 @@ def ota_background_worker(ssid, pwd, urls, caller):
     ota_status["result"] = ota.fetch_and_update(ssid, pwd, urls, caller=caller)
     ota_status["done"] = True
 
-async def trigger_threaded_ota(ssid, pwd, urls, caller):
-    global ota_status, active_task
-    ota_status = {"done": False, "result": None}
-    
-    if active_task:
-        active_task.cancel()
-        
-    _thread.start_new_thread(ota_background_worker, (ssid, pwd, urls, caller))
-    
-    pos = 0
-    direction = 1
-    
-    while not ota_status["done"]:
-        pixels.fill((0, 0, 15)) 
-        
-        for col in range(4):
-            try:
-                pixels[LEDTower1.HEIGHTS[pos][col]] = (0, 255, 255)
-                
-                if pos > 0:
-                    pixels[LEDTower1.HEIGHTS[pos-1][col]] = (0, 100, 150)
-                if pos < 24: 
-                    pixels[LEDTower1.HEIGHTS[pos+1][col]] = (0, 100, 150)
-            except (IndexError, AttributeError):
-                pass
-                
-        pixels.write()
-        
-        pos += direction
-        if pos >= 24 or pos <= 0:
-            direction *= -1
-            
-        await asyncio.sleep(0.04)
-
-    if ota_status["result"] is True:
-        pixels.fill((0, 255, 0)) 
-        pixels.write()
-        await asyncio.sleep(1)
-        machine.reset()
-    else:
-        print("OTA Failed:", ota_status["result"])
-        pixels.fill((255, 0, 0)) 
-        pixels.write()
-        await asyncio.sleep(3)
-        pixels.fill((0, 0, 0))
-        pixels.write()
-        
-        e.active(True)
-        req_msg = json.dumps({"cmd": "REQUEST_WIFI", "payload": None})
-        try:
-            e.send(broadcast_mac, req_msg.encode('utf-8'))
-        except Exception:
-            pass
-
 
 # --- 8. The ESP-NOW Listener Loop ---
 async def network_listener():
@@ -359,17 +305,11 @@ async def network_listener():
                     
                 elif cmd == "START_OTA":
                     ssid = stand_settings.get("wifi_ssid", "")
-                    pwd = stand_settings.get("wifi_pass", "")
-                    
                     if ssid:
-                        e.active(False) 
-                        
-                        stand_urls = {
-                            "LEDTower1.py": "https://raw.githubusercontent.com/YOUR_USERNAME/rainbow_stationary/main/LEDTower1.py",
-                            "speaker_stand.py": "https://raw.githubusercontent.com/YOUR_USERNAME/rainbow_stationary/main/speaker_stand.py"
-                        } 
-                        
-                        asyncio.create_task(trigger_threaded_ota(ssid, pwd, stand_urls, "speaker_stand"))
+                        # Set the flag and reboot into Safe Mode
+                        with open("ota_pending.txt", "w") as f:
+                            f.write("1")
+                        machine.reset()
                     else:
                         req_msg = json.dumps({"cmd": "REQUEST_WIFI", "payload": None})
                         try:
