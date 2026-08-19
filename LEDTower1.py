@@ -388,7 +388,7 @@ async def lava_lamp(set_led, set_led_multiple, color, speed):
                 last_visc = visc
                 freq = 0.1 + (visc * 0.02)
 
-            t = time.time() * (s_val * 0.3)
+            t = (time.ticks_ms() / 1000.0) * (s_val * 0.3)
             
             bg_r, bg_g, bg_b = bg
             lr_r, lr_g, lr_b = lava
@@ -444,7 +444,7 @@ async def helix_spin(set_led, set_led_multiple, color, speed):
             else: 
                 c1, c2, bg = (255, 0, 150), (0, 255, 255), (10, 0, 10)
 
-            t = time.time() * (s_val * 0.8)
+            t = (time.ticks_ms() / 1000.0) * (s_val * 0.8)
             twist = 0.5  
             width_factor = 1.0 + ((10 - width) * 0.3) 
 
