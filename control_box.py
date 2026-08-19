@@ -192,7 +192,11 @@ def sync_time_uk():
             
     # Disconnect so Wi-Fi doesn't interfere with ESP-NOW
     sta.disconnect()
-    sta.active(False)
+    sta.active(True) 
+    
+    # Force the radio back to Channel 1 so it can talk to the stands again
+    sta.config(channel=1)
+    print("Time sync complete. Reverted to ESP-NOW Channel 1.")
 
 
 # --- 4. Network & ESP-NOW Setup ---
@@ -898,16 +902,23 @@ async def hardware_loop():
             if btn_select.is_pressed:
                 if current_anim_name not in user_data["animation_data"]:
                     user_data["animation_data"][current_anim_name] = {}
-                if edit_attr_key != "GLOBAL_BRIGHT":
-                    user_data["animation_data"][current_anim_name][edit_attr_key] = val
                     
-                save_settings(user_data)
-                
-                payload = {"attr": edit_attr_key, "value": val}
-                broadcast_to_stands("UPDATE_ATTRIBUTE", payload)
-                
+                if edit_attr_key != "GLOBAL_BRIGHT":
+                    # Only save and broadcast if it's a real animation attribute
+                    user_data["animation_data"][current_anim_name][edit_attr_key] = val
+                    save_settings(user_data)
+                    
+                    payload = {"attr": edit_attr_key, "value": val}
+                    broadcast_to_stands("UPDATE_ATTRIBUTE", payload)
+                else:
+                    # It was just global brightness, so just save it without broadcasting an attribute update
+                    save_settings(user_data)
+                    
+                # Go back up one menu level
                 menu_mode = "ANIM_MENU"
                 last_encoder_val = -1
+                
+                # Wait for the button to be released so we don't spam the network!
                 while btn_select.is_pressed:
                     await asyncio.sleep(0.1)
 

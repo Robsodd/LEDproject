@@ -277,14 +277,22 @@ async def network_listener():
                     global_brightness = float(payload)
                 
                 elif cmd == "UPDATE_ATTRIBUTE":
+                    # Ignore setting updates if no animation is playing
+                    if not current_anim_name or current_anim_name == "stop":
+                        continue
+                        
                     attr = payload.get("attr")
                     val = payload.get("value")
-                    func = getattr(LEDTower1, current_anim_name)
-                    if hasattr(func, attr):
-                        if isinstance(getattr(func, attr), list):
-                            setattr(func, attr + "_choice", val)
-                        else:
-                            setattr(func, attr, val)
+                    
+                    try:
+                        func = getattr(LEDTower1, current_anim_name)
+                        if hasattr(func, attr):
+                            if isinstance(getattr(func, attr), list):
+                                setattr(func, attr + "_choice", val)
+                            else:
+                                setattr(func, attr, val)
+                    except AttributeError:
+                        pass # Failsafe in case the animation doesn't exist
 
                 elif cmd == "FLASH_RED_ALARM":
                     if active_task:
@@ -327,13 +335,20 @@ async def network_listener():
 # --- 9. Main Boot Logic ---
 async def main():
     print("Speaker Stand Initialized.")
+    #asyncio.create_task(stand_hardware_test())
     
+    # Check if we need to spin up the fallback Access Point & Web Server
     if not stand_settings.get("paired_brain_mac"):
         start_access_point()
         asyncio.create_task(asyncio.start_server(handle_client, "0.0.0.0", 80))
         print("Web server running in fallback mode.")
         
-    await network_listener()
+    # FIX: Run the network listener in the background
+    asyncio.create_task(network_listener())
+    
+    # Keep main() running forever so background tasks don't get cancelled
+    while True:
+        await asyncio.sleep(1)
 
 def start():
     try:
